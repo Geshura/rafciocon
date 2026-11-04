@@ -1,9 +1,8 @@
-import html
 import json
 import os
-import re
 from typing import Any
 from urllib import error, request
+from urllib.parse import urlencode
 
 
 class RequestException(Exception):
@@ -51,9 +50,9 @@ def http_request(
 
 
 STEAM_ID = os.getenv("STEAM_ID", "76561198034890618")
-STEAM_LOGIN_SECURE = os.getenv("STEAM_LOGIN_SECURE", "").strip()
+STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-STEAM_PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=all"
+STEAM_GAMES_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
 
 
 def format_playtime(minutes: int) -> str:
@@ -66,66 +65,69 @@ def format_playtime(minutes: int) -> str:
 
 
 def get_steam_status() -> str:
-    if not STEAM_LOGIN_SECURE:
-        return "❌ Brak sekretu STEAM_LOGIN_SECURE."
+    if not STEAM_API_KEY:
+        return "❌ Brak sekretu STEAM_API_KEY."
 
     try:
         response = http_request(
-            STEAM_PROFILE_URL,
-            cookies={
-                "steamLoginSecure": STEAM_LOGIN_SECURE,
-                "browserid": "0",
-            },
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
-                ),
-                "Accept-Language": "pl,en;q=0.8",
-            },
+            f"{STEAM_GAMES_URL}?{urlencode({
+                'key': STEAM_API_KEY,
+                'steamid': STEAM_ID,
+                'format': 'json',
+                'include_appinfo': '1',
+                'include_played_free_games': '1',
+            })}",
             timeout=15,
         )
         response.raise_for_status()
     except RequestException as error:
         return f"⚠️ Nie udało się połączyć ze Steam: {error}"
 
-    if "login" in response.url.lower() or "Sign in" in response.text:
-        return "❌ Sekret STEAM_LOGIN_SECURE wygasł lub jest nieprawidłowy."
-
-    match = re.search(
-        r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
-        response.text,
-        re.DOTALL,
-    )
-    if not match:
-        return (
-            "⚠️ Steam zalogował sesję, ale nie udostępnił listy gier. "
-            "Ustaw widoczność gier na Publiczna."
-        )
-
     try:
-        games: list[dict[str, Any]] = json.loads(html.unescape(match.group(1)))
+        data = json.loads(response.text)
     except (json.JSONDecodeError, TypeError):
-        return "⚠️ Nie udało się odczytać danych gier ze strony Steam."
+        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
+
+    if not isinstance(data, dict):
+        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
+
+    steam_response = data.get("response")
+    if not isinstance(steam_response, dict):
+        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
+
+    games = steam_response.get("games")
+    if not isinstance(games, list):
+        return (
+            "⚠️ Steam nie udostępnił listy gier. Sprawdź STEAM_API_KEY "
+            "oraz ustaw widoczność profilu i gier na Publiczną."
+        )
 
     if not games:
         return "💤 Brak gier zapisanych w bibliotece Steam."
 
     try:
         games_with_playtime = [
-            game for game in games if int(game.get("hours_forever", 0) or 0) > 0
+            game
+            for game in games
+            if int(game.get("playtime_forever", 0) or 0) > 0
         ]
     except (AttributeError, TypeError, ValueError):
         return "⚠️ Steam zwrócił nieprawidłowy czas gry."
     if not games_with_playtime:
         return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
 
+    try:
+        games_with_playtime.sort(
+            key=lambda game: int(game.get("rtime_last_played", 0) or 0),
+            reverse=True,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
     last_game = games_with_playtime[0]
     game_name = last_game.get("name", "Nieznana gra")
-    # Steam's hours_* fields are actually measured in minutes.
-    total_minutes = int(last_game.get("hours_forever", 0) or 0)
+    total_minutes = int(last_game.get("playtime_forever", 0) or 0)
     try:
-        recent_minutes = int(last_game.get("hours_2weeks", 0) or 0)
+        recent_minutes = int(last_game.get("playtime_2weeks", 0) or 0)
     except (TypeError, ValueError):
         return "⚠️ Steam zwrócił nieprawidłowy czas gry."
 
