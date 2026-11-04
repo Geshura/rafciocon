@@ -89,7 +89,7 @@ def get_profile_recent_game() -> dict[str, Any] | None:
     except RequestException:
         return None
 
-    # Wzorzec 1: klasyczna zmienna JavaScript rgGames
+    # Wzorzec 1: Klasyczny zapis tablicy JavaScript rgGames
     match = re.search(
         r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
         response.text,
@@ -103,7 +103,7 @@ def get_profile_recent_game() -> dict[str, Any] | None:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Wzorzec 2: dane JSON osadzone w atrybutach elementów profilu
+    # Wzorzec 2: Zserializowane dane JSON w strukturze profilu Steam
     match_json = re.search(
         r"data-profile-json=[\"']({.*?})[\"']",
         response.text,
@@ -132,64 +132,63 @@ def get_profile_recent_game() -> dict[str, Any] | None:
 
 
 def get_steam_status() -> str:
-    if not STEAM_API_KEY:
-        return "❌ Brak sekretu STEAM_API_KEY."
-
-    query = urlencode(
-        {
-            "key": STEAM_API_KEY,
-            "steamid": STEAM_ID,
-            "format": "json",
-            "include_appinfo": "1",
-            "include_played_free_games": "1",
-        }
-    )
-
     recent_games = None
     owned_games = None
-    for endpoint in (STEAM_RECENT_GAMES_URL, STEAM_GAMES_URL):
-        try:
-            response = http_request(f"{endpoint}?{query}", timeout=15)
-            response.raise_for_status()
-            data = json.loads(response.text)
-        except (RequestException, json.JSONDecodeError, TypeError):
-            continue
 
-        if not isinstance(data, dict):
-            continue
-        steam_response = data.get("response")
-        if not isinstance(steam_response, dict):
-            continue
-        candidate_games = steam_response.get("games")
-        if not isinstance(candidate_games, list):
-            continue
-        if endpoint == STEAM_RECENT_GAMES_URL:
-            recent_games = candidate_games
-        else:
-            owned_games = candidate_games
-
-    if recent_games is None and owned_games is None:
-        return (
-            "⚠️ Steam nie udostępnił listy gier. Sprawdź STEAM_API_KEY "
-            "oraz ustaw widoczność profilu i gier na Publiczną."
+    if STEAM_API_KEY:
+        query = urlencode(
+            {
+                "key": STEAM_API_KEY,
+                "steamid": STEAM_ID,
+                "format": "json",
+                "include_appinfo": "1",
+                "include_played_free_games": "1",
+            }
         )
 
-    if not recent_games and not owned_games:
-        return "💤 Brak gier zapisanych w bibliotece Steam."
+        for endpoint in (STEAM_RECENT_GAMES_URL, STEAM_GAMES_URL):
+            try:
+                response = http_request(f"{endpoint}?{query}", timeout=15)
+                response.raise_for_status()
+                data = json.loads(response.text)
+            except (RequestException, json.JSONDecodeError, TypeError):
+                continue
+
+            if not isinstance(data, dict):
+                continue
+            steam_response = data.get("response")
+            if not isinstance(steam_response, dict):
+                continue
+            candidate_games = steam_response.get("games")
+            if not isinstance(candidate_games, list):
+                continue
+            if endpoint == STEAM_RECENT_GAMES_URL:
+                recent_games = candidate_games
+            else:
+                owned_games = candidate_games
 
     profile_recent_game = get_profile_recent_game()
     last_game = None
     total_source = None
     recent_source = None
 
-    # 1. Priorytet: bezpośrednia odpowiedź z API GetRecentlyPlayedGames (najbardziej niezawodna)
-    if recent_games:
+    # 1. Priorytet absolutny: Pobranie z widoku strony profilu (odpowiada dokładnie temu, co na zrzucie ekrany)
+    if profile_recent_game:
+        last_game = profile_recent_game
+        owned_by_appid = {game.get("appid"): game for game in (owned_games or [])}
+        recent_by_appid = {game.get("appid"): game for game in (recent_games or [])}
+        
+        total_source = owned_by_appid.get(last_game.get("appid")) or last_game
+        recent_source = recent_by_appid.get(last_game.get("appid")) or last_game
+
+    # 2. Próba ustalenia z API GetRecentlyPlayedGames (jeśli profil HTML nic nie zwrócił)
+    elif recent_games:
         last_game = recent_games[0]
         recent_source = last_game
         owned_by_appid = {game.get("appid"): game for game in (owned_games or [])}
         total_source = owned_by_appid.get(last_game.get("appid")) or last_game
 
-    # 2. Jeśli brak niedawno granych w API, szukamy po owned_games z zabezpieczeniem rtime_last_played
+    # 3. Szukanie w całej bibliotece po dacie uruchomienia (rtime_last_played)
     elif owned_games:
         try:
             games_by_appid = {
@@ -213,13 +212,7 @@ def get_steam_status() -> str:
         except (AttributeError, TypeError, ValueError):
             pass
 
-    # 3. Fallback: profil publiczny HTML
-    if not last_game and profile_recent_game:
-        last_game = profile_recent_game
-        total_source = last_game
-        recent_source = last_game
-
-    # 4. Fallback ostateczny: pierwsza gra posiadająca łączny czas gry
+    # 4. Fallback: najwięcej ogólnego czasu
     if not last_game and owned_games:
         games_with_playtime = [
             game
@@ -232,7 +225,10 @@ def get_steam_status() -> str:
             recent_source = last_game
 
     if not last_game:
-        return "💤 Steam nie zwrócił informacji o ostatnio granych tytułach."
+        return (
+            "⚠️ Nie udało się pobrać informacji o ostatniej grze. "
+            "Upewnij się, że Twój profil i widoczność gier na Steamie są ustawione jako **Publiczne**."
+        )
 
     try:
         game_name = str(last_game.get("name", "Nieznana gra"))
