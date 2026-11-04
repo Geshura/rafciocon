@@ -1,4 +1,5 @@
 import html
+import json
 import os
 import re
 from typing import Any
@@ -55,14 +56,12 @@ def http_request(
         raise RequestException(str(exception)) from exception
 
 
-# Oficjalny endpoint XML profilu Steam (działa dla niestandardowych URL-i i jest całkowicie publiczny)
 STEAM_PROFILE_XML_URL = "https://steamcommunity.com/id/geshurapl/?xml=1"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 
 def format_playtime(hours_str: str) -> str:
     try:
-        # Czas w XML profilu bywa podawany jako string z przecinkami/kropkami, np. "50,3" lub "12"
         clean_val = hours_str.replace(",", ".").strip()
         hours_float = float(clean_val)
         total_minutes = int(round(hours_float * 60))
@@ -91,25 +90,21 @@ def get_steam_status() -> str:
 
     xml_text = response.text
 
-    # Sprawdzamy czy profil jest publiczny i czy XML nie jest zablokowany
     if "<error>" in xml_text or "The specified profile could not be found" in xml_text:
         return "⚠️ Profil Steam nie został znaleziony lub jest prywatny."
 
-    # Wyciągamy sekcję ostatnich gier z XML profilu (np. <recentgames><game>...</game></recentgames>)
     recent_games_match = re.search(r"<recentgames>(.*?)</recentgames>", xml_text, re.DOTALL)
     if not recent_games_match:
         return "💤 Brak publicznych informacji o ostatnio granych tytułach na profilu."
 
     games_block = recent_games_match.group(1)
     
-    # Znajdujemy pierwszą grę z listy
     game_match = re.search(r"<game>(.*?)</game>", games_block, re.DOTALL)
     if not game_match:
         return "💤 Brak gier w sekcji ostatniej aktywności."
 
     game_content = game_match.group(1)
 
-    # Parsujemy pola XML za pomocą wyrażeń regularnych
     def extract_tag(tag: str) -> str:
         m = re.search(f"<{tag}>(.*?)</{tag}>", game_content, re.DOTALL)
         return html.unescape(m.group(1).strip()) if m else ""
