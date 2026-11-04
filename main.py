@@ -1,6 +1,4 @@
 import os
-import re
-import json
 import requests
 from bs4 import BeautifulSoup
 
@@ -12,48 +10,44 @@ def get_steam_status():
     if not STEAM_LOGIN_SECURE:
         return "❌ Brak skonfigurowanego sekretu STEAM_LOGIN_SECURE w GitHubie!"
 
-    # Przekazujemy ciasteczko sesyjne Steam, aby ominąć blokady logowania
+    # Ciasteczko sesyjne autoryzujące zapytanie jako Ty
     cookies = {
         'steamLoginSecure': STEAM_LOGIN_SECURE
     }
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
-    games_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent"
+    # Endpoint XML dla ostatnich gier - sortuje po ostatniej aktywności i nie blokuje skryptów
+    url = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent&xml=1"
     
     try:
-        response = requests.get(games_url, cookies=cookies, headers=headers)
+        response = requests.get(url, cookies=cookies, headers=headers)
         
-        # Sprawdzamy czy sesja nie wygasła
-        if "login/home" in response.url or response.status_code != 200:
-            return "❌ Ciasteczko steamLoginSecure wygasło lub jest niepoprawne. Wymagane odświeżenie ciastka z przeglądarki."
+        if response.status_code != 200 or "login" in response.url:
+            return "❌ Ciasteczko steamLoginSecure wygasło lub jest niepoprawne. Zaktualizuj je w sekretach GitHub."
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        # Parsujemy odpowiedź jako XML
+        soup = BeautifulSoup(response.content, "xml")
         
-        # Pobieranie nazwy użytkownika
-        name_node = soup.find("a", class_="header_real_name") or soup.find("span", class_="actual_persona_name")
-        persona_name = name_node.text.strip() if name_node else "Gracz"
+        games = soup.find_all("game")
+        if not games:
+            return "💤 Profil nie posiada publicznej listy gier lub historia jest ukryta."
 
-        # Wyciąganie danych o ostatnich grach ze skryptu JavaScript rgGames
-        match = re.search(r'var rgGames = (\[.*?\]);', response.text, re.DOTALL)
-        if match:
-            games_data = json.loads(match.group(1))
-            if games_data:
-                last_game = games_data[0]
-                game_title = last_game.get("name", "Nieznana gra")
-                
-                minutes_2weeks = last_game.get("hours_2weeks", 0)
-                hours_2weeks = round(minutes_2weeks, 1) if isinstance(minutes_2weeks, (int, float)) else 0
+        # Pierwsza gra na liście to ta odpalana/grana ostatnio
+        last_game = games[0]
+        game_name = last_game.find("name").text if last_game.find("name") else "Nieznana gra"
+        hours_on_record = last_game.find("hoursOnRecord").text if last_game.find("hoursOnRecord") else "0"
+        
+        # Sprawdzamy czas w ostatnich 2 tygodniach, jeśli tag istnieje w XML
+        hours_2w_tag = last_game.find("hours_2weeks")
+        hours_2w_text = f" ({hours_2w_tag.text} h w ostatnich 2 tygodniach)" if hours_2w_tag and hours_2w_tag.text else ""
 
-                return f"🎮 **{persona_name}** (sesja aktywna)\nOstatnio odpalona gra: **{game_title}** — **{hours_2weeks} h** w ostatnich 2 tygodniach."
-
-        return f"💤 **{persona_name}** – brak historii ostatnich gier na profilu."
+        return f"🎮 **Wizzkey** – Ostatnia aktywność (gra):\n📌 **{game_name}**\n⏱️ Łącznie: **{hours_on_record} h**{hours_2w_text}"
 
     except Exception as e:
-        return f"⚠️ Błąd podczas parsowania Steam: {e}"
+        return f"⚠️ Błąd podczas pobierania danych o grach: {e}"
 
 if __name__ == "__main__":
     if not DISCORD_WEBHOOK_URL:
