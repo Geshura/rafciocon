@@ -136,7 +136,13 @@ def get_steam_status() -> str:
         total_source = owned_by_appid.get(last_game.get("appid")) or last_game
         recent_source = recent_by_appid.get(last_game.get("appid")) or last_game
     elif recent_games:
-        last_game = recent_games[0]
+        try:
+            last_game = max(
+                recent_games,
+                key=lambda game: int(game.get("playtime_2weeks", 0) or 0),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return "⚠️ Steam zwrócił nieprawidłowy czas gry."
         owned_by_appid = {
             game.get("appid"): game for game in (owned_games or [])
         }
