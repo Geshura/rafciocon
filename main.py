@@ -68,15 +68,19 @@ def get_steam_status() -> str:
     if not STEAM_API_KEY:
         return "❌ Brak sekretu STEAM_API_KEY."
 
+    query = urlencode(
+        {
+            "key": STEAM_API_KEY,
+            "steamid": STEAM_ID,
+            "format": "json",
+            "include_appinfo": "1",
+            "include_played_free_games": "1",
+        }
+    )
+
     try:
         response = http_request(
-            f"{STEAM_GAMES_URL}?{urlencode({
-                'key': STEAM_API_KEY,
-                'steamid': STEAM_ID,
-                'format': 'json',
-                'include_appinfo': '1',
-                'include_played_free_games': '1',
-            })}",
+            f"{STEAM_GAMES_URL}?{query}",
             timeout=15,
         )
         response.raise_for_status()
