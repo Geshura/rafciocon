@@ -58,6 +58,9 @@ def http_request(
 STEAM_ID = os.getenv("STEAM_ID", "76561198034890618")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+STEAM_RECENT_GAMES_URL = (
+    "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/"
+)
 STEAM_GAMES_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
 
 
@@ -84,29 +87,28 @@ def get_steam_status() -> str:
         }
     )
 
-    try:
-        response = http_request(
-            f"{STEAM_GAMES_URL}?{query}",
-            timeout=15,
-        )
-        response.raise_for_status()
-    except RequestException as error:
-        return f"⚠️ Nie udało się połączyć ze Steam: {error}"
+    games = None
+    from_recent_endpoint = False
+    for endpoint in (STEAM_RECENT_GAMES_URL, STEAM_GAMES_URL):
+        try:
+            response = http_request(f"{endpoint}?{query}", timeout=15)
+            response.raise_for_status()
+            data = json.loads(response.text)
+        except (RequestException, json.JSONDecodeError, TypeError):
+            continue
 
-    try:
-        data = json.loads(response.text)
-    except (json.JSONDecodeError, TypeError):
-        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
+        if not isinstance(data, dict):
+            continue
+        steam_response = data.get("response")
+        if not isinstance(steam_response, dict):
+            continue
+        candidate_games = steam_response.get("games")
+        if isinstance(candidate_games, list) and candidate_games:
+            games = candidate_games
+            from_recent_endpoint = endpoint == STEAM_RECENT_GAMES_URL
+            break
 
-    if not isinstance(data, dict):
-        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
-
-    steam_response = data.get("response")
-    if not isinstance(steam_response, dict):
-        return "⚠️ Steam zwrócił nieprawidłową odpowiedź API."
-
-    games = steam_response.get("games")
-    if not isinstance(games, list):
+    if games is None:
         return (
             "⚠️ Steam nie udostępnił listy gier. Sprawdź STEAM_API_KEY "
             "oraz ustaw widoczność profilu i gier na Publiczną."
@@ -126,13 +128,14 @@ def get_steam_status() -> str:
     if not games_with_playtime:
         return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
 
-    try:
-        games_with_playtime.sort(
-            key=lambda game: int(game.get("rtime_last_played", 0) or 0),
-            reverse=True,
-        )
-    except (AttributeError, TypeError, ValueError):
-        return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
+    if not from_recent_endpoint:
+        try:
+            games_with_playtime.sort(
+                key=lambda game: int(game.get("rtime_last_played", 0) or 0),
+                reverse=True,
+            )
+        except (AttributeError, TypeError, ValueError):
+            return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
     last_game = games_with_playtime[0]
     game_name = last_game.get("name", "Nieznana gra")
     total_minutes = int(last_game.get("playtime_forever", 0) or 0)
