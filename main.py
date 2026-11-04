@@ -208,23 +208,52 @@ def get_steam_status() -> str:
         "🎮 **Ostatnia gra na Steamie:**\n"
         f"📌 **{game_name}**\n"
         f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
+        f"📅 W ostatnich 2 tygodniach: **{format_format_playtime_safe(recent_minutes)}**" if 'format_format_playtime_safe' in globals() else
         f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
     )
 
 
 def get_profile_recent_game() -> dict[str, Any] | None:
     try:
-        response = http_request(STEAM_RECENT_PROFILE_URL, timeout=15)
+        # Dodajemy nagłówek User-Agent, aby Steam nie traktował żądania jako bota
+        response = http_request(
+            STEAM_RECENT_PROFILE_URL,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=15,
+        )
         response.raise_for_status()
     except RequestException:
         return None
 
+    # Nowe podejście: szukanie danych w zserializowanym JSON przypisanym do elementu lub zmiennej rgGames / g_rgProfileData
     match = re.search(
         r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
         response.text,
         re.DOTALL,
     )
+    
+    # Jeśli starszy wzorzec nie zadziała, szukamy bloku danych JSON wewnątrz struktury profilu Steam (React/Vue app data)
     if not match:
+        match_json = re.search(
+            r"data-profile-json=[\"']({.*?})[\"']",
+            response.text,
+            re.DOTALL,
+        )
+        if match_json:
+            try:
+                profile_data = json.loads(html.unescape(match_json.group(1)))
+                games = profile_data.get("rgGames")
+                if isinstance(games, list) and games:
+                    first_game = games[0]
+                    if isinstance(first_game, dict):
+                        return {
+                            "appid": first_game.get("appid"),
+                            "name": first_game.get("name"),
+                            "playtime_forever": first_game.get("hours_forever", 0) * 60 if "hours_forever" in first_game else first_game.get("playtime_forever", 0),
+                            "playtime_2weeks": first_game.get("hours_2weeks", 0) * 60 if "hours_2weeks" in first_game else first_game.get("playtime_2weeks", 0),
+                        }
+            except (json.JSONDecodeError, TypeError):
+                pass
         return None
 
     try:
