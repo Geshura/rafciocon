@@ -5,7 +5,13 @@ import sys
 import requests
 
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 
 # ==========================================
