@@ -23,13 +23,23 @@ STEAM_ID = os.getenv(
     "76561198034890618"
 ).strip()
 
+STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
+
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL",
     ""
 ).strip()
 
-STEAM_PROFILE_URL = (
-    f"https://steamcommunity.com/profiles/{STEAM_ID}/"
+PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/"
+
+RECENT_URL = (
+    f"https://steamcommunity.com/profiles/{STEAM_ID}/games/"
+    "?tab=recent"
+)
+
+API_RECENT_URL = (
+    "https://api.steampowered.com/"
+    "IPlayerService/GetRecentlyPlayedGames/v1/"
 )
 
 MAX_GAMES = 5
@@ -45,44 +55,26 @@ HEADERS = {
 }
 
 
+session = requests.Session()
+session.headers.update(HEADERS)
+
+
 # ==========================================
 # POBIERANIE STRONY
 # ==========================================
 
-def get_profile_page(url):
-    try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=TIMEOUT,
-        )
+def fetch_page(url):
+    response = session.get(
+        url,
+        timeout=TIMEOUT,
+    )
 
-        if response.status_code == 403:
-            raise RuntimeError(
-                "Steam odrzucił żądanie (HTTP 403)."
-            )
+    response.raise_for_status()
 
-        if response.status_code == 429:
-            raise RuntimeError(
-                "Steam ograniczył liczbę żądań (HTTP 429)."
-            )
-
-        response.raise_for_status()
-
-        if "steamcommunity.com" not in response.url:
-            raise RuntimeError(
-                "Nieoczekiwane przekierowanie strony Steam."
-            )
-
-        return BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            f"Błąd pobierania profilu: {exc}"
-        ) from exc
+    return BeautifulSoup(
+        response.text,
+        "html.parser"
+    ), response.url, response.text
 
 
 # ==========================================
@@ -98,16 +90,57 @@ def clean_text(element):
     ).strip()
 
 
-def extract_appid(element):
-    if not element:
+def get_appid(href):
+    if not href:
         return None
 
-    for link in element.select("a[href]"):
-        href = link.get("href", "")
+    match = re.search(
+        r"/app/(\d+)",
+        href
+    )
 
+    return match.group(1) if match else None
+
+
+def get_game_name(element):
+    # Nazwa z tekstu linku
+    text = clean_text(element)
+
+    if text and len(text) < 150:
+        return text
+
+    # Nazwa z grafiki
+    image = element.select_one("img")
+
+    if image:
+        for attribute in ("alt", "title"):
+            value = image.get(attribute, "").strip()
+
+            if value:
+                return value
+
+    # Nazwa z atrybutu title
+    title = element.get("title", "").strip()
+
+    if title:
+        return title
+
+    return None
+
+
+def extract_playtime(text):
+    patterns = [
+        r"([\d,.]+)\s*(?:hrs?|hours?)\s*on\s*record",
+        r"([\d,.]+)\s*hours?",
+        r"([\d,.]+)\s*hrs?",
+        r"([\d,.]+)\s*godz\.?",
+    ]
+
+    for pattern in patterns:
         match = re.search(
-            r"/app/(\d+)",
-            href
+            pattern,
+            text,
+            re.IGNORECASE
         )
 
         if match:
@@ -116,291 +149,450 @@ def extract_appid(element):
     return None
 
 
-def extract_game_name(element):
+def extract_recent_time(text):
+    patterns = [
+        r"([\d,.]+)\s*(?:hrs?|hours?)\s*"
+        r"(?:past|in the past|last)\s*2\s*weeks",
+
+        r"([\d,.]+)\s*hours?\s*"
+        r"in the last 2 weeks",
+
+        r"([\d,.]+)\s*godz\.?\s*"
+        r"w ostatnich 2 tygodniach",
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            return match.group(1)
+
+    return None
+
+
+# ==========================================
+# ANALIZA ELEMENTU GRY
+# ==========================================
+
+def parse_game_block(block):
+
+    appid = None
+
+    for link in block.select("a[href]"):
+        appid = get_appid(link.get("href"))
+
+        if appid:
+            break
+
+    if not appid:
+        return None
+
+    name = None
+
+    # Typowe elementy Steam
     selectors = [
-        ".game_name a",
+        ".gameListRowItemName",
         ".game_name",
-        ".game_name a span",
-        "a[href*='/app/']",
+        ".game_name a",
+        ".gameListRowItemName a",
     ]
 
     for selector in selectors:
-        node = element.select_one(selector)
+        node = block.select_one(selector)
 
         if node:
             name = clean_text(node)
 
             if name:
-                return name
+                break
 
-    return None
+    # Szukanie nazwy w linkach
+    if not name:
+        for link in block.select("a[href]"):
+            if get_appid(link.get("href")) == appid:
+                name = get_game_name(link)
+                if name:
+                    break
+
+    # Szukanie nazwy w obrazkach
+    if not name:
+        image = block.select_one("img")
+
+        if image:
+            name = (
+                image.get("alt")
+                or image.get("title")
+            )
+
+    if not name:
+        return None
+
+    text = clean_text(block)
+
+    return {
+        "appid": appid,
+        "name": name.strip(),
+        "total": extract_playtime(text),
+        "recent": extract_recent_time(text),
+        "last_played": None,
+    }
 
 
-def extract_playtime(element):
-    """
-    Odczytuje łączny czas gry z informacji
-    widocznych na profilu.
-    """
+# ==========================================
+# ODCZYT GRY Z HTML
+# ==========================================
 
-    text = clean_text(element)
+def parse_games_page(soup):
 
-    patterns = [
-        r"([\d,.]+)\s*hrs?\s*on\s*record",
-        r"([\d,.]+)\s*hours?\s*on\s*record",
-        r"([\d,.]+)\s*godz\.?\s*na\s*liczniku",
-    ]
+    games = []
+    seen = set()
 
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        )
-
-        if match:
-            return match.group(1)
-
-    return None
-
-
-def extract_last_played(element):
-    """
-    Odczytuje datę ostatniego grania,
-    jeśli Steam wyświetla ją na profilu.
-    """
-
-    text = clean_text(element)
-
-    patterns = [
-        r"last played on\s+(.+?)(?:$|\|)",
-        r"ostatnio grano\s+(.+?)(?:$|\|)",
-        r"ostatnio grana\s+(.+?)(?:$|\|)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            text,
-            re.IGNORECASE
-        )
-
-        if match:
-            return match.group(1).strip()
-
-    # Alternatywne wyszukiwanie w osobnym elemencie
+    # Najpierw konkretne wiersze biblioteki Steam
     selectors = [
-        ".game_info_date",
-        ".game_info_details",
+        ".gameListRow",
+        "#games_list_rows .gameListRow",
+        ".recent_game",
+        ".recentgame",
+    ]
+
+    blocks = []
+
+    for selector in selectors:
+        blocks.extend(
+            soup.select(selector)
+        )
+
+    for block in blocks:
+
+        game = parse_game_block(block)
+
+        if not game:
+            continue
+
+        if game["appid"] in seen:
+            continue
+
+        seen.add(game["appid"])
+        games.append(game)
+
+    # Druga metoda: szukanie linków do gier
+    if not games:
+
+        for link in soup.select("a[href*='/app/']"):
+
+            appid = get_appid(
+                link.get("href")
+            )
+
+            if not appid or appid in seen:
+                continue
+
+            name = get_game_name(link)
+
+            if not name:
+                continue
+
+            parent = link.parent
+
+            for _ in range(3):
+                if parent and parent.parent:
+                    parent = parent.parent
+
+            text = clean_text(parent)
+
+            games.append({
+                "appid": appid,
+                "name": name,
+                "total": extract_playtime(text),
+                "recent": extract_recent_time(text),
+                "last_played": None,
+            })
+
+            seen.add(appid)
+
+    return games
+
+
+# ==========================================
+# STEAM API - FALLBACK
+# ==========================================
+
+def get_games_from_api():
+
+    if not STEAM_API_KEY:
+        return []
+
+    try:
+        response = session.get(
+            API_RECENT_URL,
+            params={
+                "key": STEAM_API_KEY,
+                "steamid": STEAM_ID,
+                "count": MAX_GAMES,
+            },
+            timeout=TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        games = data.get(
+            "response", {}
+        ).get("games", [])
+
+        result = []
+
+        for game in games:
+            appid = str(game.get("appid", "")).strip()
+            name = str(game.get("name", "")).strip()
+
+            if not appid or not name:
+                continue
+
+            recent_minutes = game.get("playtime_2weeks", 0)
+
+            result.append({
+                "appid": appid,
+                "name": name,
+                "total": None,
+                "recent": str(
+                    round(
+                        int(recent_minutes) / 60,
+                        1
+                    )
+                ),
+                "last_played": None,
+            })
+
+        return result
+
+    except (
+        requests.RequestException,
+        ValueError,
+        TypeError,
+    ) as exc:
+
+        print(f"[API] Nie udało się pobrać gier: {exc}")
+
+        return []
+
+
+# ==========================================
+# DIAGNOSTYKA
+# ==========================================
+
+def save_debug(html, url):
+
+    with open(
+        "steam_debug.html",
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            f"<!-- URL: {url} -->\n"
+        )
+
+        file.write(html)
+
+    print(
+        "[DEBUG] Zapisano odpowiedź Steam do steam_debug.html"
+    )
+
+
+# ==========================================
+# POBIERANIE OSTATNIEJ AKTYWNOŚCI
+# ==========================================
+
+def get_recent_activity():
+
+    # Web API nie zależy od zmiennego HTML-a profilu Steam.
+    if STEAM_API_KEY:
+        print("[STEAM] Pobieranie danych z Web API...")
+        api_games = get_games_from_api()
+
+        if api_games:
+            return api_games[:MAX_GAMES]
+
+        print("[STEAM] Web API nie zwróciło gier, używam HTML jako fallbacku.")
+
+    all_games = []
+    seen = set()
+    debug_html = ""
+    debug_url = PROFILE_URL
+
+    urls = [
+        PROFILE_URL,
+        RECENT_URL,
+    ]
+
+    for url in urls:
+
+        print(f"[STEAM] Pobieranie: {url}")
+
+        try:
+            soup, final_url, html = fetch_page(url)
+
+            debug_html = html
+            debug_url = final_url
+
+            print(
+                f"[STEAM] HTTP OK: {final_url}"
+            )
+
+            title = clean_text(
+                soup.select_one("title")
+            )
+
+            print(
+                f"[STEAM] Tytuł strony: {title}"
+            )
+
+            games = parse_games_page(soup)
+
+            print(
+                f"[STEAM] Znaleziono gier: {len(games)}"
+            )
+
+            for game in games:
+
+                if game["appid"] in seen:
+                    continue
+
+                seen.add(game["appid"])
+                all_games.append(game)
+
+        except requests.RequestException as exc:
+
+            print(
+                f"[STEAM] Błąd pobierania: {exc}"
+            )
+
+    if not all_games and debug_html:
+
+        save_debug(
+            debug_html,
+            debug_url
+        )
+
+    return all_games
+
+
+# ==========================================
+# NAZWA PROFILU
+# ==========================================
+
+def get_profile_name(soup):
+
+    selectors = [
+        ".actual_persona_name",
+        ".profile_header_name",
     ]
 
     for selector in selectors:
-        node = element.select_one(selector)
 
-        if node:
-            value = clean_text(node)
-
-            if value:
-                return value
-
-    return None
-
-
-# ==========================================
-# ANALIZA OSTATNIEJ AKTYWNOŚCI
-# ==========================================
-
-def get_recent_activity(soup):
-
-    # Wykrywanie profilu prywatnego
-    page_text = soup.get_text(
-        " ",
-        strip=True
-    ).lower()
-
-    private_phrases = [
-        "this profile is private",
-        "this user's profile is private",
-        "profil jest prywatny",
-        "profil użytkownika jest prywatny",
-    ]
-
-    if any(
-        phrase in page_text
-        for phrase in private_phrases
-    ):
-        raise RuntimeError(
-            "Profil Steam jest prywatny."
-        )
-
-    # Ogólny czas aktywności z ostatnich 14 dni
-    recent_total = None
-
-    activity_selectors = [
-        ".recentgame_recentplaytime",
-        ".profile_recentgame_header",
-        ".recent_game_header",
-    ]
-
-    for selector in activity_selectors:
         node = soup.select_one(selector)
 
         if node:
-            text = clean_text(node)
+            return clean_text(node)
 
-            match = re.search(
-                r"([\d,.]+)\s*(?:hours?|hrs?|godz\.?)"
-                r".{0,30}(?:past 2 weeks|last 2 weeks|"
-                r"ostatnich 2 tygodni)",
-                text,
-                re.IGNORECASE,
-            )
-
-            if match:
-                recent_total = match.group(1)
-                break
-
-    # Elementy poszczególnych gier
-    game_blocks = soup.select(
-        "#games_list_rows .gameListRow, "
-        ".recent_game, "
-        ".gameListRow"
-    )
-
-    games = []
-    seen_appids = set()
-
-    for block in game_blocks:
-
-        name = extract_game_name(block)
-
-        if not name:
-            continue
-
-        appid = extract_appid(block)
-
-        if appid and appid in seen_appids:
-            continue
-
-        if appid:
-            seen_appids.add(appid)
-
-        games.append({
-            "name": name,
-            "appid": appid,
-            "playtime": extract_playtime(block),
-            "last_played": extract_last_played(block),
-        })
-
-        if len(games) >= MAX_GAMES:
-            break
-
-    # Jeżeli strona główna nie zwróciła gier,
-    # sprawdzamy publiczną zakładkę ostatnio granych.
-    if not games:
-        return recent_total, []
-
-    return recent_total, games
+    return "Użytkownik Steam"
 
 
 # ==========================================
-# FORMATOWANIE DISCORD
+# TWORZENIE WIADOMOŚCI
 # ==========================================
 
-def create_discord_message():
+def create_message():
 
-    soup = get_profile_page(
-        STEAM_PROFILE_URL
-    )
+    try:
+        soup, _, _ = fetch_page(PROFILE_URL)
 
-    # Nazwa użytkownika
-    profile_name = "Nieznany użytkownik"
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Nie można pobrać profilu: {exc}"
+        ) from exc
 
-    name_node = soup.select_one(
-        ".actual_persona_name"
-    )
+    profile_name = get_profile_name(soup)
 
-    if name_node:
-        profile_name = clean_text(name_node)
-
-    recent_total, games = get_recent_activity(
-        soup
-    )
+    games = get_recent_activity()
 
     lines = [
         f"🎮 **Steam – {profile_name}**",
         "",
         "📊 **OSTATNIA AKTYWNOŚĆ**",
-    ]
-
-    if recent_total:
-        lines.append(
-            f"⏱️ Łącznie w ostatnich 2 tygodniach: "
-            f"**{recent_total} godz.**"
-        )
-
-    lines.extend([
         "",
         "🕹️ **OSTATNIO GRANE GRY**",
-    ])
+    ]
 
     if not games:
-        lines.append(
-            "⚠️ Nie znaleziono publicznej historii gier."
-        )
 
-    for index, game in enumerate(games, 1):
+        lines.extend([
+            "",
+            "⚠️ Nie znaleziono publicznej historii gier.",
+            "",
+            "Możliwe przyczyny:",
+            "• Prywatne szczegóły gier.",
+            "• Brak ostatnio granych gier.",
+            "• Steam nie zwrócił sekcji gier w HTML.",
+            "• Strona wymaga dodatkowej weryfikacji.",
+        ])
 
-        name = game["name"]
-        playtime = game["playtime"]
-        last_played = game["last_played"]
-        appid = game["appid"]
+    else:
 
-        lines.append(
-            f"\n**{index}. {name}**"
-        )
+        for index, game in enumerate(
+            games[:MAX_GAMES],
+            1
+        ):
 
-        if last_played:
             lines.append(
-                f"📅 Ostatnio grano: {last_played}"
+                f"\n**{index}. {game['name']}**"
             )
 
-        if playtime:
-            lines.append(
-                f"⏱️ Łącznie: {playtime} godz."
-            )
+            if game.get("recent") is not None:
+                lines.append(
+                    f"📅 Ostatnie 2 tygodnie: "
+                    f"{game['recent']} godz."
+                )
 
-        if appid:
-            lines.append(
-                f"🔗 https://store.steampowered.com/app/{appid}/"
-            )
+            if game.get("total") is not None:
+                lines.append(
+                    f"⏱️ Łącznie: {game['total']} godz."
+                )
+
+            if game.get("appid"):
+                lines.append(
+                    f"🔗 https://store.steampowered.com/app/"
+                    f"{game['appid']}/"
+                )
 
     lines.extend([
         "",
-        f"🔗 [Profil Steam]({STEAM_PROFILE_URL})",
+        f"🔗 [Profil Steam]({PROFILE_URL})",
         "",
-        "🤖 Dane pobrane bezpośrednio z profilu Steam.",
+        "🤖 Źródło: publiczny profil Steam / Steam Web API.",
     ])
 
-    message = "\n".join(lines)
-
-    if len(message) > 2000:
-        message = message[:1950] + "\n\n... (skrócono)"
-
-    return message
+    return "\n".join(lines)[:2000]
 
 
 # ==========================================
-# WYSYŁANIE DISCORD WEBHOOK
+# DISCORD
 # ==========================================
 
-def send_discord_message(message):
+def send_discord(message):
 
     if not DISCORD_WEBHOOK_URL:
         raise RuntimeError(
             "Brak DISCORD_WEBHOOK_URL."
         )
 
-    response = requests.post(
+    response = session.post(
         DISCORD_WEBHOOK_URL,
         json={
             "content": message,
@@ -408,7 +600,6 @@ def send_discord_message(message):
                 "parse": []
             },
         },
-        headers=HEADERS,
         timeout=TIMEOUT,
     )
 
@@ -422,22 +613,23 @@ def send_discord_message(message):
 if __name__ == "__main__":
 
     try:
-        print("Pobieranie profilu Steam...")
 
-        message = create_discord_message()
+        print("=" * 45)
+        print("STEAM PROFILE MONITOR")
+        print("=" * 45)
 
+        message = create_message()
+
+        print("\nWIADOMOŚĆ:")
+        print("-" * 45)
         print(message)
-        print("\nWysyłanie na Discord...")
+        print("-" * 45)
 
-        send_discord_message(message)
+        send_discord(message)
 
-        print(
-            "\n✅ Pomyślnie wysłano aktywność Steam!"
-        )
+        print("\n[OK] Wysłano wiadomość na Discord.")
 
     except Exception as exc:
-        print(
-            f"\n❌ BŁĄD: {exc}"
-        )
 
+        print(f"\n[BŁĄD] {exc}")
         sys.exit(1)
