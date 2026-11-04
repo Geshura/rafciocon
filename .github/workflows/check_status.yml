@@ -23,7 +23,6 @@ jobs:
 
       - name: Uruchomienie skryptu sprawdzającego
         env:
-          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python main.py
