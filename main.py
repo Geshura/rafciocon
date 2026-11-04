@@ -1,39 +1,46 @@
 import os
 import requests
+from bs4 import BeautifulSoup
+import json
 
-STEAM_API_KEY = os.getenv("STEAM_API_KEY")
 STEAM_ID = "76561198034890618"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def get_steam_status():
-    summary_url = f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={STEAM_API_KEY}&steamids={STEAM_ID}"
-    res_summary = requests.get(summary_url).json()
-    players = res_summary.get("response", {}).get("players", [])
+    # Pobieramy publiczną stronę profilu Steam
+    profile_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/?xml=1"
     
-    if not players:
-        return "Nie znaleziono gracza o podanym ID."
+    try:
+        response = requests.get(profile_url)
+        if response.status_code != 200:
+            return "❌ Nie udało się pobrać strony profilu Steam."
+
+        # Parsujemy dane XML udostępniane publicznie przez Steam
+        soup = BeautifulSoup(response.content, "xml")
         
-    player = players[0]
-    persona_name = player.get("personaname", "Gracz")
-    current_game = player.get("gameextrainfo")
+        persona_name = soup.find("steamID").text if soup.find("steamID") else "Gracz"
+        online_state = soup.find("onlineState").text if soup.find("onlineState") else "offline"
+        
+        # Sprawdzamy czy aktualnie gra
+        in_game_node = soup.find("inGameInfo")
+        game_name_node = soup.find("gameName")
 
-    if current_game:
-        return f"🎮 **{persona_name}** aktualnie gra w **{current_game}**!"
+        if online_state == "online" and game_name_node:
+            game_name = game_name_node.text
+            return f"🎮 **{persona_name}** aktualnie gra w **{game_name}**!"
+        else:
+            # Jeśli nie gra, sprawdzamy status tekstowy (np. "Offline", "Last Online 3 days ago")
+            state_message = soup.find("stateMessage").text if soup.find("stateMessage") else "Offline"
+            # Oczyszczamy tekst ze zbędnych znaczników HTML jeśli występują
+            clean_state = BeautifulSoup(state_message, "html.parser").get_text()
+            return f"💤 **{persona_name}** jest obecnie w stanie: *{clean_state}*"
 
-    recent_url = f"https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v1/?key={STEAM_API_KEY}&steamid={STEAM_ID}"
-    res_recent = requests.get(recent_url).json()
-    games = res_recent.get("response", {}).get("games", [])
-
-    if games:
-        last_game = games[0]["name"]
-        playtime_2w = round(games[0]["playtime_2weeks"] / 60, 1)
-        return f"💤 **{persona_name}** jest offline. Ostatnio grał w **{last_game}** ({playtime_2w} h w ostatnich 2 tygodniach)."
-    else:
-        return f"💤 **{persona_name}** jest offline i brak aktywności w ostatnich 2 tygodniach."
+    except Exception as e:
+        return f"⚠️ Wystąpił błąd podczas sprawdzania statusu Steam: {e}"
 
 if __name__ == "__main__":
-    if not STEAM_API_KEY or not DISCORD_WEBHOOK_URL:
-        print("Błąd: Brak skonfigurowanych kluczy w sekretach GitHub!")
+    if not DISCORD_WEBHOOK_URL:
+        print("Błąd: Brak skonfigurowanego sekretu DISCORD_WEBHOOK_URL!")
         exit(1)
         
     message = get_steam_status()
