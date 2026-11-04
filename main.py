@@ -87,8 +87,8 @@ def get_steam_status() -> str:
         }
     )
 
-    games = None
-    from_recent_endpoint = False
+    recent_games = None
+    owned_games = None
     for endpoint in (STEAM_RECENT_GAMES_URL, STEAM_GAMES_URL):
         try:
             response = http_request(f"{endpoint}?{query}", timeout=15)
@@ -103,20 +103,23 @@ def get_steam_status() -> str:
         if not isinstance(steam_response, dict):
             continue
         candidate_games = steam_response.get("games")
-        if isinstance(candidate_games, list) and candidate_games:
-            games = candidate_games
-            from_recent_endpoint = endpoint == STEAM_RECENT_GAMES_URL
-            break
+        if not isinstance(candidate_games, list):
+            continue
+        if endpoint == STEAM_RECENT_GAMES_URL:
+            recent_games = candidate_games
+        else:
+            owned_games = candidate_games
 
-    if games is None:
+    if recent_games is None and owned_games is None:
         return (
             "⚠️ Steam nie udostępnił listy gier. Sprawdź STEAM_API_KEY "
             "oraz ustaw widoczność profilu i gier na Publiczną."
         )
 
-    if not games:
+    if not recent_games and not owned_games:
         return "💤 Brak gier zapisanych w bibliotece Steam."
 
+    games = owned_games or recent_games
     try:
         games_with_playtime = [
             game
@@ -128,7 +131,7 @@ def get_steam_status() -> str:
     if not games_with_playtime:
         return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
 
-    if not from_recent_endpoint:
+    if owned_games:
         try:
             games_with_playtime.sort(
                 key=lambda game: int(game.get("rtime_last_played", 0) or 0),
@@ -141,6 +144,13 @@ def get_steam_status() -> str:
     total_minutes = int(last_game.get("playtime_forever", 0) or 0)
     try:
         recent_minutes = int(last_game.get("playtime_2weeks", 0) or 0)
+        if not recent_minutes and recent_games:
+            recent_by_appid = {
+                game.get("appid"): game for game in recent_games
+            }
+            recent_game = recent_by_appid.get(last_game.get("appid"))
+            if recent_game:
+                recent_minutes = int(recent_game.get("playtime_2weeks", 0) or 0)
     except (TypeError, ValueError):
         return "⚠️ Steam zwrócił nieprawidłowy czas gry."
 
