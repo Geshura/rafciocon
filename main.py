@@ -56,12 +56,8 @@ def http_request(
         raise RequestException(str(exception)) from exception
 
 
-STEAM_ID = os.getenv("STEAM_ID", "76561198034890618")
+STEAM_PROFILE_URL = "https://steamcommunity.com/id/geshurapl/games/?tab=recent"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-# Wchodzimy bezpośrednio na zakładkę /games/?tab=recent profilu publicznego
-STEAM_PROFILE_RECENT_URL = (
-    f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent"
-)
 
 
 def format_playtime(minutes: int) -> str:
@@ -75,9 +71,8 @@ def format_playtime(minutes: int) -> str:
 
 def get_profile_recent_game() -> dict[str, Any] | None:
     try:
-        # Używamy przeglądarkowego User-Agenta, żeby Steam nie odrzucił żądania jako bota
         response = http_request(
-            STEAM_PROFILE_RECENT_URL,
+            STEAM_PROFILE_URL,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -90,7 +85,7 @@ def get_profile_recent_game() -> dict[str, Any] | None:
     except RequestException:
         return None
 
-    # Metoda 1: Szukanie zmiennej JavaScript rgGames przypisanej na stronie
+    # Szukanie zmiennej JavaScript rgGames ze spisem gier na profilu
     match = re.search(
         r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
         response.text,
@@ -104,7 +99,7 @@ def get_profile_recent_game() -> dict[str, Any] | None:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Metoda 2: Szukanie zserializowanego JSON-a w atrybutach elementów (np. struktury profilu)
+    # Alternatywne szukanie zserializowanego JSON-a w strukturze profilu
     match_json = re.search(
         r"data-profile-json=[\"']({.*?})[\"']",
         response.text,
@@ -116,7 +111,6 @@ def get_profile_recent_game() -> dict[str, Any] | None:
             games = profile_data.get("rgGames")
             if isinstance(games, list) and games and isinstance(games[0], dict):
                 first_game = games[0]
-                # Konwersja formatów godzinowych na minuty, jeśli występują
                 return {
                     "name": first_game.get("name"),
                     "playtime_forever": int(
@@ -140,7 +134,7 @@ def get_steam_status() -> str:
     game = get_profile_recent_game()
     if not game:
         return (
-            "⚠️ Nie udało się pobrać danych ze strony profilu Steam. "
+            "⚠️ Nie udało się pobrać danych ze strony profilu Steam (`geshurapl`). "
             "Upewnij się, że Twój profil oraz szczegóły gier są ustawione jako **Publiczne**."
         )
 
@@ -155,7 +149,7 @@ def get_steam_status() -> str:
         return "⚠️ Steam nie zwrócił łącznego czasu dla ostatniej gry."
 
     return (
-        "🎮 **Ostatnia gra na Steamie (z profilu):**\n"
+        "🎮 **Ostatnia gra na Steamie (`geshurapl`):**\n"
         f"📌 **{game_name}**\n"
         f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
         f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
