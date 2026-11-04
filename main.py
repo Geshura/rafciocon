@@ -119,39 +119,43 @@ def get_steam_status() -> str:
     if not recent_games and not owned_games:
         return "💤 Brak gier zapisanych w bibliotece Steam."
 
-    games = owned_games or recent_games
-    try:
-        games_with_playtime = [
-            game
-            for game in games
-            if int(game.get("playtime_forever", 0) or 0) > 0
-        ]
-    except (AttributeError, TypeError, ValueError):
-        return "⚠️ Steam zwrócił nieprawidłowy czas gry."
-    if not games_with_playtime:
-        return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
-
-    if owned_games:
+    if recent_games:
+        last_game = recent_games[0]
+        owned_by_appid = {
+            game.get("appid"): game for game in (owned_games or [])
+        }
+        owned_game = owned_by_appid.get(last_game.get("appid"))
+        total_source = owned_game or last_game
+    else:
+        games_with_playtime = owned_games or []
         try:
+            games_with_playtime = [
+                game
+                for game in games_with_playtime
+                if int(game.get("playtime_forever", 0) or 0) > 0
+            ]
             games_with_playtime.sort(
                 key=lambda game: int(game.get("rtime_last_played", 0) or 0),
                 reverse=True,
             )
         except (AttributeError, TypeError, ValueError):
-            return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
-    last_game = games_with_playtime[0]
-    game_name = last_game.get("name", "Nieznana gra")
-    total_minutes = int(last_game.get("playtime_forever", 0) or 0)
+            return "⚠️ Steam zwrócił nieprawidłowy czas gry."
+        if not games_with_playtime:
+            return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
+        last_game = games_with_playtime[0]
+        total_source = last_game
+
     try:
+        game_name = str(last_game.get("name", "Nieznana gra"))
+        total_minutes = int(total_source.get("playtime_forever", 0) or 0)
         recent_minutes = int(last_game.get("playtime_2weeks", 0) or 0)
-        if not recent_minutes and recent_games:
-            recent_by_appid = {
-                game.get("appid"): game for game in recent_games
-            }
-            recent_game = recent_by_appid.get(last_game.get("appid"))
-            if recent_game:
-                recent_minutes = int(recent_game.get("playtime_2weeks", 0) or 0)
-    except (TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
+        return "⚠️ Steam zwrócił nieprawidłowy czas gry."
+
+    if total_minutes <= 0:
+        return "⚠️ Steam nie zwrócił łącznego czasu dla ostatniej gry."
+
+    if recent_minutes < 0:
         return "⚠️ Steam zwrócił nieprawidłowy czas gry."
 
     return (
