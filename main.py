@@ -165,8 +165,16 @@ def get_steam_status() -> str:
 
     try:
         game_name = str(last_game.get("name", "Nieznana gra"))
-        total_minutes = int(total_source.get("playtime_forever", 0) or 0)
-        recent_minutes = int(recent_source.get("playtime_2weeks", 0) or 0)
+        total_minutes = int(
+            total_source.get("playtime_forever")
+            or total_source.get("hours_forever", 0)
+            or 0
+        )
+        recent_minutes = int(
+            recent_source.get("playtime_2weeks")
+            or recent_source.get("hours_2weeks", 0)
+            or 0
+        )
     except (AttributeError, TypeError, ValueError):
         return "⚠️ Steam zwrócił nieprawidłowy czas gry."
 
