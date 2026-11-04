@@ -1,58 +1,87 @@
 import os
-import re
-import json
+from typing import Any
+
 import requests
-from bs4 import BeautifulSoup
 
-STEAM_ID = "76561198034890618"
+
+STEAM_API_URL = "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/"
+STEAM_API_KEY = os.getenv("STEAM_API_KEY")
+STEAM_ID = os.getenv("STEAM_ID")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-STEAM_LOGIN_SECURE = os.getenv("STEAM_LOGIN_SECURE")
 
-def get_steam_status():
-    if not STEAM_LOGIN_SECURE:
-        return "❌ Brak skonfigurowanego sekretu STEAM_LOGIN_SECURE w GitHubie!"
 
-    # Ciasteczko sesyjne autoryzujące zapytanie
-    cookies = {
-        'steamLoginSecure': STEAM_LOGIN_SECURE
-    }
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+def format_playtime(minutes: int) -> str:
+    """Convert Steam's playtime in minutes to a readable value."""
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours and remaining_minutes:
+        return f"{hours} godz. {remaining_minutes} min"
+    if hours:
+        return f"{hours} godz."
+    return f"{remaining_minutes} min"
 
-    # Strona ostatnich gier z autoryzacją ciasteczkiem
-    games_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent"
-    
+
+def get_steam_status() -> str:
+    if not STEAM_API_KEY:
+        return "❌ Brak sekretu STEAM_API_KEY."
+    if not STEAM_ID:
+        return "❌ Brak zmiennej STEAM_ID z identyfikatorem użytkownika Steam."
+
     try:
-        response = requests.get(games_url, cookies=cookies, headers=headers)
-        
-        if response.status_code != 200 or "login" in response.url:
-            return "❌ Ciasteczko steamLoginSecure wygasło lub jest niepoprawne. Zaktualizuj je w sekretach GitHub."
+        response = requests.get(
+            STEAM_API_URL,
+            params={
+                "key": STEAM_API_KEY,
+                "steamid": STEAM_ID,
+                "format": "json",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload: dict[str, Any] = response.json()
+    except requests.RequestException as error:
+        return f"⚠️ Nie udało się połączyć z Steam Web API: {error}"
+    except ValueError:
+        return "⚠️ Steam Web API zwróciło nieprawidłową odpowiedź JSON."
 
-        # Steam zapisuje ostatnie gry w zmiennej JavaScript rgGames
-        match = re.search(r'var rgGames = (\[.*?\]);', response.text, re.DOTALL)
-        if match:
-            games_data = json.loads(match.group(1))
-            if games_data:
-                last_game = games_data[0]
-                game_title = last_game.get("name", "Nieznana gra")
-                hours_2weeks = last_game.get("hours_2weeks", 0)
-                hours_forever = last_game.get("hours_forever", 0)
+    steam_response = payload.get("response")
+    if not isinstance(steam_response, dict):
+        return "⚠️ Steam Web API zwróciło nieprawidłową strukturę odpowiedzi."
 
-                return f"🎮 **Ostatnia aktywność na Steamie:**\n📌 Gra: **{game_title}**\n⏱️ W ostatnich 2 tyg.: **{hours_2weeks} h** (Łącznie: {hours_forever} h)"
+    games = steam_response.get("games", [])
+    if not isinstance(games, list):
+        return "⚠️ Steam Web API zwróciło nieprawidłową listę gier."
+    if not games:
+        return "💤 Brak publicznej historii ostatnio uruchamianych gier."
 
-        return "💤 Brak publicznej historii ostatnich gier na profilu."
+    last_game = games[0]
+    if not isinstance(last_game, dict):
+        return "⚠️ Steam Web API zwróciło nieprawidłowe dane gry."
 
-    except Exception as e:
-        return f"⚠️ Błąd podczas parsowania Steam: {e}"
+    game_name = last_game.get("name", "Nieznana gra")
+    try:
+        total_minutes = int(last_game.get("playtime_forever", 0))
+        recent_minutes = int(last_game.get("playtime_2weeks", 0))
+    except (TypeError, ValueError):
+        return "⚠️ Steam Web API zwróciło nieprawidłowy czas gry."
+
+    return (
+        "🎮 **Ostatnia gra na Steamie:**\n"
+        f"📌 **{game_name}**\n"
+        f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
+        f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
+    )
+
 
 if __name__ == "__main__":
     if not DISCORD_WEBHOOK_URL:
-        print("Błąd: Brak skonfigurowanego sekretu DISCORD_WEBHOOK_URL!")
-        exit(1)
-        
+        print("Błąd: Brak sekretu DISCORD_WEBHOOK_URL.")
+        raise SystemExit(1)
+
     message = get_steam_status()
-    response = requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+    response = requests.post(
+        DISCORD_WEBHOOK_URL,
+        json={"content": message},
+        timeout=15,
+    )
+    response.raise_for_status()
     print(f"Wysłano status na Discorda. Kod odpowiedzi: {response.status_code}")
