@@ -45,7 +45,13 @@ def http_request(
             timeout=timeout,
         ) as response:
             return Response(response, response.read())
-    except (error.HTTPError, error.URLError, TimeoutError) as exception:
+    except error.HTTPError as exception:
+        details = exception.read().decode("utf-8", errors="replace").strip()
+        message = f"HTTP {exception.code}"
+        if details:
+            message = f"{message}: {details[:300]}"
+        raise RequestException(message) from exception
+    except (error.URLError, TimeoutError) as exception:
         raise RequestException(str(exception)) from exception
 
 
@@ -153,6 +159,10 @@ if __name__ == "__main__":
         response = http_request(
             DISCORD_WEBHOOK_URL,
             method="POST",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "rafciocon/1.0",
+            },
             json_data={"content": message},
             timeout=15,
         )
