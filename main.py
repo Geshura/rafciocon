@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import requests
 from bs4 import BeautifulSoup
 
@@ -8,61 +9,49 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def get_steam_status():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
     }
 
-    # 1. Sprawdzamy główną stronę profilu XML (czy gra w coś na żywo)
-    xml_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/?xml=1"
+    games_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent"
     
     try:
-        res_xml = requests.get(xml_url, headers=headers)
-        if res_xml.status_code == 200:
-            soup_xml = BeautifulSoup(res_xml.content, "xml")
-            persona_name = soup_xml.find("steamID").text if soup_xml.find("steamID") else "Gracz"
-            game_name_node = soup_xml.find("gameName")
+        response = requests.get(games_url, headers=headers)
+        if response.status_code != 200:
+            return "❌ Nie udało się pobrać strony profilu Steam (sprawdź czy profil/szczegóły gier są publiczne)."
 
-            # Jeśli gra w coś w tej chwili (nawet jeśli ma status niewidoczny, czasem tu trafia)
-            if game_name_node and game_name_node.text.strip():
-                return f"🎮 **{persona_name}** aktualnie gra w **{game_name_node.text.strip()}**!"
-
-        # 2. Jeśli status to offline/niewidoczny, skrapujemy bezpośrednio stronę ostatnich gier HTML
-        games_url = f"https://steamcommunity.com/profiles/{STEAM_ID}/games/?tab=recent"
-        res_games = requests.get(games_url, headers=headers)
+        soup = BeautifulSoup(response.content, "html.parser")
         
-        # Wyciągamy nazwisko gracza z nagłówka strony
-        soup_html = BeautifulSoup(res_games.content, "html.parser")
-        name_node = soup_html.find("a", class_="header_real_name") or soup_html.find("span", class_="actual_persona_name")
+        # Pobieranie nazwy użytkownika
+        name_node = soup.find("a", class_="header_real_name") or soup.find("span", class_="actual_persona_name")
         persona_name = name_node.text.strip() if name_node else "Gracz"
 
-        # Steam trzyma dane o ostatnich grach w zmiennej JavaScript `rgGames` na stronie
-        match = re.search(r'var rgGames = (\[.*?\]);', res_games.text, re.DOTALL)
+        # Steam zapisuje listę ostatnich gier w skrypcie JavaScript jako zmienna rgGames
+        match = re.search(r'var rgGames = (\[.*?\]);', response.text, re.DOTALL)
         if match:
-            import json
             games_data = json.loads(match.group(1))
             if games_data:
                 last_game = games_data[0]
                 game_title = last_game.get("name", "Nieznana gra")
-                hours_2w = last_game.get("hours_forever", "0") # lub hours w 2w jeśli dostępne
-                hours_recent = last_game.get("hours", None)
                 
-                if hours_recent:
-                    return f"👀 **{persona_name}** (status: Niewidoczny/Offline)\nOstatnio grał w: **{game_title}** ({hours_recent} h w ostatnich 2 tygodniach)."
-                else:
-                    return f"👀 **{persona_name}** (status: Niewidoczny/Offline)\nOstatnio grał w: **{game_title}**."
+                # Czas w ostatnich 2 tygodniach (podawany w minutach lub jako zmienna hours)
+                minutes_2weeks = last_game.get("hours_2weeks", 0)
+                # Czas w godzinach zaokrąglony do 1 miejsca po przecinku
+                hours_2weeks = round(minutes_2weeks, 1) if isinstance(minutes_2weeks, (int, float)) else 0
+                
+                # Jeśli klucz hours_2weeks ma format stringa lub inny, wyciągnijmy z fields jeśli trzeba
+                if not hours_2weeks and "hours_2weeks" in last_game:
+                    try:
+                        hours_2weeks = float(str(last_game["hours_2weeks"]).replace(",", "."))
+                    except:
+                        hours_2weeks = 0
 
-        # Alternatywne parsowanie z bloku profilowego HTML
-        recent_block = soup_html.find_all("div", class_="recent_game")
-        if recent_block:
-            first_game = recent_block[0]
-            game_title = first_game.find("div", class_="game_name").text.strip()
-            time_played = first_game.find("div", class_="game_info").text.strip()
-            return f"👀 **{persona_name}** (status: Niewidoczny/Offline)\nOstatnia aktywność: **{game_title}** ({time_played})."
+                return f"🎮 **{persona_name}** (status: Niewidoczny/Offline)\nOstatnio odpalona gra: **{game_title}** — **{hours_2weeks} h** w ostatnich 2 tygodniach."
 
-        return f"💤 **{persona_name}** jest niewidoczny/offline i brak publicznych ostatnich gier."
+        return f"💤 **{persona_name}** jest offline, a na profilu brak danych o ostatnich grach."
 
     except Exception as e:
-        return f"⚠️ Błąd podczas pobierania profilu: {e}"
+        return f"⚠️ Błąd podczas parsowania Steam: {e}"
 
 if __name__ == "__main__":
     if not DISCORD_WEBHOOK_URL:
