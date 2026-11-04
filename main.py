@@ -78,6 +78,59 @@ def format_playtime(minutes: int) -> str:
     return f"{remaining_minutes} min"
 
 
+def get_profile_recent_game() -> dict[str, Any] | None:
+    try:
+        response = http_request(
+            STEAM_RECENT_PROFILE_URL,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=15,
+        )
+        response.raise_for_status()
+    except RequestException:
+        return None
+
+    # Wzorzec 1: klasyczna zmienna JavaScript rgGames
+    match = re.search(
+        r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
+        response.text,
+        re.DOTALL,
+    )
+    if match:
+        try:
+            games = json.loads(html.unescape(match.group(1)))
+            if isinstance(games, list) and games and isinstance(games[0], dict):
+                return games[0]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Wzorzec 2: dane JSON osadzone w atrybutach elementów profilu
+    match_json = re.search(
+        r"data-profile-json=[\"']({.*?})[\"']",
+        response.text,
+        re.DOTALL,
+    )
+    if match_json:
+        try:
+            profile_data = json.loads(html.unescape(match_json.group(1)))
+            games = profile_data.get("rgGames")
+            if isinstance(games, list) and games and isinstance(games[0], dict):
+                first_game = games[0]
+                return {
+                    "appid": first_game.get("appid"),
+                    "name": first_game.get("name"),
+                    "playtime_forever": first_game.get("hours_forever", 0) * 60
+                    if "hours_forever" in first_game
+                    else first_game.get("playtime_forever", 0),
+                    "playtime_2weeks": first_game.get("hours_2weeks", 0) * 60
+                    if "hours_2weeks" in first_game
+                    else first_game.get("playtime_2weeks", 0),
+                }
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return None
+
+
 def get_steam_status() -> str:
     if not STEAM_API_KEY:
         return "❌ Brak sekretu STEAM_API_KEY."
@@ -125,7 +178,19 @@ def get_steam_status() -> str:
         return "💤 Brak gier zapisanych w bibliotece Steam."
 
     profile_recent_game = get_profile_recent_game()
-    if owned_games:
+    last_game = None
+    total_source = None
+    recent_source = None
+
+    # 1. Priorytet: bezpośrednia odpowiedź z API GetRecentlyPlayedGames (najbardziej niezawodna)
+    if recent_games:
+        last_game = recent_games[0]
+        recent_source = last_game
+        owned_by_appid = {game.get("appid"): game for game in (owned_games or [])}
+        total_source = owned_by_appid.get(last_game.get("appid")) or last_game
+
+    # 2. Jeśli brak niedawno granych w API, szukamy po owned_games z zabezpieczeniem rtime_last_played
+    elif owned_games:
         try:
             games_by_appid = {
                 game.get("appid"): game
@@ -138,50 +203,36 @@ def get_steam_status() -> str:
                 if int(game.get("playtime_forever", 0) or 0) > 0
                 and int(game.get("rtime_last_played", 0) or 0) > 0
             ]
-            last_game = max(
-                games_with_last_played,
-                key=lambda game: int(game.get("rtime_last_played", 0)),
-            )
+            if games_with_last_played:
+                last_game = max(
+                    games_with_last_played,
+                    key=lambda game: int(game.get("rtime_last_played", 0)),
+                )
+                total_source = last_game
+                recent_source = last_game
         except (AttributeError, TypeError, ValueError):
-            return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
-        if not games_with_last_played:
-            return "💤 Steam nie zwrócił daty ostatniego uruchomienia gry."
-        recent_by_appid = {
-            game.get("appid"): game for game in (recent_games or [])
-        }
-        total_source = games_by_appid.get(last_game.get("appid")) or last_game
-        recent_source = recent_by_appid.get(last_game.get("appid")) or last_game
-    elif profile_recent_game:
+            pass
+
+    # 3. Fallback: profil publiczny HTML
+    if not last_game and profile_recent_game:
         last_game = profile_recent_game
         total_source = last_game
         recent_source = last_game
-    elif recent_games:
-        last_game = recent_games[0]
-        owned_by_appid = {
-            game.get("appid"): game for game in (owned_games or [])
-        }
-        owned_game = owned_by_appid.get(last_game.get("appid"))
-        total_source = owned_game or last_game
-        recent_source = last_game
-    else:
-        games_with_playtime = owned_games or []
-        try:
-            games_with_playtime = [
-                game
-                for game in games_with_playtime
-                if int(game.get("playtime_forever", 0) or 0) > 0
-            ]
-            games_with_playtime.sort(
-                key=lambda game: int(game.get("rtime_last_played", 0) or 0),
-                reverse=True,
-            )
-        except (AttributeError, TypeError, ValueError):
-            return "⚠️ Steam zwrócił nieprawidłowy czas gry."
-        if not games_with_playtime:
-            return "💤 Steam nie zwrócił czasu gry dla żadnej gry."
-        last_game = games_with_playtime[0]
-        total_source = last_game
-        recent_source = last_game
+
+    # 4. Fallback ostateczny: pierwsza gra posiadająca łączny czas gry
+    if not last_game and owned_games:
+        games_with_playtime = [
+            game
+            for game in owned_games
+            if int(game.get("playtime_forever", 0) or 0) > 0
+        ]
+        if games_with_playtime:
+            last_game = games_with_playtime[0]
+            total_source = last_game
+            recent_source = last_game
+
+    if not last_game:
+        return "💤 Steam nie zwrócił informacji o ostatnio granych tytułach."
 
     try:
         game_name = str(last_game.get("name", "Nieznana gra"))
@@ -208,63 +259,8 @@ def get_steam_status() -> str:
         "🎮 **Ostatnia gra na Steamie:**\n"
         f"📌 **{game_name}**\n"
         f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
-        f"📅 W ostatnich 2 tygodniach: **{format_format_playtime_safe(recent_minutes)}**" if 'format_format_playtime_safe' in globals() else
         f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
     )
-
-
-def get_profile_recent_game() -> dict[str, Any] | None:
-    try:
-        # Dodajemy nagłówek User-Agent, aby Steam nie traktował żądania jako bota
-        response = http_request(
-            STEAM_RECENT_PROFILE_URL,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=15,
-        )
-        response.raise_for_status()
-    except RequestException:
-        return None
-
-    # Nowe podejście: szukanie danych w zserializowanym JSON przypisanym do elementu lub zmiennej rgGames / g_rgProfileData
-    match = re.search(
-        r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
-        response.text,
-        re.DOTALL,
-    )
-    
-    # Jeśli starszy wzorzec nie zadziała, szukamy bloku danych JSON wewnątrz struktury profilu Steam (React/Vue app data)
-    if not match:
-        match_json = re.search(
-            r"data-profile-json=[\"']({.*?})[\"']",
-            response.text,
-            re.DOTALL,
-        )
-        if match_json:
-            try:
-                profile_data = json.loads(html.unescape(match_json.group(1)))
-                games = profile_data.get("rgGames")
-                if isinstance(games, list) and games:
-                    first_game = games[0]
-                    if isinstance(first_game, dict):
-                        return {
-                            "appid": first_game.get("appid"),
-                            "name": first_game.get("name"),
-                            "playtime_forever": first_game.get("hours_forever", 0) * 60 if "hours_forever" in first_game else first_game.get("playtime_forever", 0),
-                            "playtime_2weeks": first_game.get("hours_2weeks", 0) * 60 if "hours_2weeks" in first_game else first_game.get("playtime_2weeks", 0),
-                        }
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return None
-
-    try:
-        games = json.loads(html.unescape(match.group(1)))
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-    if not isinstance(games, list) or not games:
-        return None
-    first_game = games[0]
-    return first_game if isinstance(first_game, dict) else None
 
 
 if __name__ == "__main__":
