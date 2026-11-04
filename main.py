@@ -87,20 +87,10 @@ def get_steam_status() -> str:
         }
     )
 
-    recent_games = []
     owned_games = []
+    recent_games_map = {}
 
-    # Pobieramy ostatnio grane z endpointu GetRecentlyPlayedGames
-    try:
-        response = http_request(f"{STEAM_RECENT_GAMES_URL}?{query}", timeout=15)
-        response.raise_for_status()
-        data = json.loads(response.text)
-        if isinstance(data, dict):
-            recent_games = data.get("response", {}).get("games", []) or []
-    except (RequestException, json.JSONDecodeError, TypeError):
-        pass
-
-    # Pobieramy całą bibliotekę owned_games dla uzupełnienia łącznego czasu (playtime_forever)
+    # 1. Pobieramy pełną listę gier (GetOwnedGames zawiera dokładny znacznik rtime_last_played)
     try:
         response = http_request(f"{STEAM_GAMES_URL}?{query}", timeout=15)
         response.raise_for_status()
@@ -110,68 +100,51 @@ def get_steam_status() -> str:
     except (RequestException, json.JSONDecodeError, TypeError):
         pass
 
-    if not recent_games and not owned_games:
+    # 2. Pobieramy też recent_games, aby móc precyzyjnie wyciągnąć playtime_2weeks
+    try:
+        response = http_request(f"{STEAM_RECENT_GAMES_URL}?{query}", timeout=15)
+        response.raise_for_status()
+        data = json.loads(response.text)
+        if isinstance(data, dict):
+            recent_list = data.get("response", {}).get("games", []) or []
+            recent_games_map = {g.get("appid"): g for g in recent_list if g.get("appid") is not None}
+    except (RequestException, json.JSONDecodeError, TypeError):
+        pass
+
+    if not owned_games:
         return (
             "⚠️ Steam nie udostępnił listy gier. Sprawdź STEAM_API_KEY "
             "oraz ustaw widoczność profilu i gier na Publiczną."
         )
 
-    last_game = None
-    total_minutes = 0
-    recent_minutes = 0
-
-    # Tworzymy mapę całej biblioteki po appid do łatwego wyciągania łącznego czasu
-    owned_by_appid = {game.get("appid"): game for game in owned_games if game.get("appid") is not None}
-
-    if recent_games:
-        # Sortujemy gry z ostatnich 2 tygodni malejąco po czasie grania w ostatnich 2 tygodniach lub bierzemy pierwszą z listy API
-        try:
-            recent_games.sort(
-                key=lambda g: int(g.get("playtime_2weeks", 0) or 0),
-                reverse=True
-            )
-        except (TypeError, ValueError):
-            pass
-
-        last_game = recent_games[0]
-        app_id = last_game.get("appid")
+    # 3. Filtrujemy i sortujemy BEZWZGLĘDNIE po dacie ostatniego uruchomienia (rtime_last_played)
+    try:
+        games_with_last_played = [
+            g for g in owned_games
+            if int(g.get("playtime_forever", 0) or 0) > 0
+            and int(g.get("rtime_last_played", 0) or 0) > 0
+        ]
         
-        # Pobieramy pełne dane z owned_games jeśli istnieją, żeby mieć pewny playtime_forever
-        matched_owned = owned_by_appid.get(app_id, {})
-        
-        total_minutes = int(
-            matched_owned.get("playtime_forever")
-            or last_game.get("playtime_forever")
-            or 0
+        # Sortowanie malejąco: najwyższy timestamp (najświeższa data) na samej górze
+        games_with_last_played.sort(
+            key=lambda g: int(g.get("rtime_last_played", 0)),
+            reverse=True
         )
-        recent_minutes = int(
-            last_game.get("playtime_2weeks")
-            or matched_owned.get("playtime_2weeks")
-            or 0
-        )
-    elif owned_games:
-        # Awaryjnie sortujemy całą bibliotekę po dacie ostatniego uruchomienia rtime_last_played
-        try:
-            games_with_last_played = [
-                g for g in owned_games
-                if int(g.get("playtime_forever", 0) or 0) > 0
-                and int(g.get("rtime_last_played", 0) or 0) > 0
-            ]
-            if games_with_last_played:
-                games_with_last_played.sort(
-                    key=lambda g: int(g.get("rtime_last_played", 0)),
-                    reverse=True
-                )
-                last_game = games_with_last_played[0]
-                total_minutes = int(last_game.get("playtime_forever", 0))
-                recent_minutes = int(last_game.get("playtime_2weeks", 0))
-        except (TypeError, ValueError):
-            pass
+    except (TypeError, ValueError):
+        games_with_last_played = []
 
-    if not last_game:
+    if not games_with_last_played:
         return "💤 Brak informacji o ostatnio granych tytułach."
 
+    last_game = games_with_last_played[0]
+    app_id = last_game.get("appid")
+    
     game_name = str(last_game.get("name", "Nieznana gra"))
+    total_minutes = int(last_game.get("playtime_forever", 0))
+    
+    # Pobieramy czas z ostatnich 2 tygodni jeśli występuje w mapie recent, w przeciwnym razie 0
+    recent_data = recent_games_map.get(app_id, {})
+    recent_minutes = int(recent_data.get("playtime_2weeks", last_game.get("playtime_2weeks", 0)) or 0)
 
     if total_minutes <= 0:
         return "⚠️ Steam nie zwrócił łącznego czasu dla ostatniej gry."
