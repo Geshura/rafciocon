@@ -51,7 +51,7 @@ def http_request(
 
 STEAM_ID = os.getenv("STEAM_ID", "76561198034890618")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 STEAM_GAMES_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
 
 
@@ -149,11 +149,20 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     message = get_steam_status()
-    response = http_request(
-        DISCORD_WEBHOOK_URL,
-        method="POST",
-        json_data={"content": message},
-        timeout=15,
-    )
-    response.raise_for_status()
+    try:
+        response = http_request(
+            DISCORD_WEBHOOK_URL,
+            method="POST",
+            json_data={"content": message},
+            timeout=15,
+        )
+        response.raise_for_status()
+    except RequestException as error:
+        print(
+            "Błąd wysyłania wiadomości na Discorda. "
+            "Sprawdź, czy sekret DISCORD_WEBHOOK_URL zawiera aktualny URL webhooka: "
+            f"{error}"
+        )
+        raise SystemExit(1) from error
+
     print(f"Wysłano status na Discorda. Kod odpowiedzi: {response.status_code}")
