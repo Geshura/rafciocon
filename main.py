@@ -1,9 +1,8 @@
-import html
 import json
 import os
-import re
 from typing import Any
 from urllib import error, request
+from urllib.parse import urlencode
 
 
 class RequestException(Exception):
@@ -56,71 +55,106 @@ def http_request(
         raise RequestException(str(exception)) from exception
 
 
-STEAM_PROFILE_XML_URL = "https://steamcommunity.com/id/geshurapl/?xml=1"
+STEAM_ID = "76561198034890618"
+STEAM_API_KEY = os.getenv("STEAM_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+STEAM_RECENT_GAMES_URL = (
+    "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/"
+)
+STEAM_GAMES_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
 
 
-def format_playtime(hours_str: str) -> str:
-    try:
-        clean_val = hours_str.replace(",", ".").strip()
-        hours_float = float(clean_val)
-        total_minutes = int(round(hours_float * 60))
-        hours, remaining_minutes = divmod(total_minutes, 60)
-        if hours and remaining_minutes:
-            return f"{hours} godz. {remaining_minutes} min"
-        if hours:
-            return f"{hours} godz."
-        return f"{remaining_minutes} min"
-    except (ValueError, TypeError):
-        return f"{hours_str} godz."
+def format_playtime(minutes: int) -> str:
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours and remaining_minutes:
+        return f"{hours} godz. {remaining_minutes} min"
+    if hours:
+        return f"{hours} godz."
+    return f"{remaining_minutes} min"
 
 
 def get_steam_status() -> str:
+    if not STEAM_API_KEY:
+        return "❌ Brak sekretu STEAM_API_KEY w środowisku."
+
+    query = urlencode(
+        {
+            "key": STEAM_API_KEY,
+            "steamid": STEAM_ID,
+            "format": "json",
+            "include_appinfo": "1",
+            "include_played_free_games": "1",
+        }
+    )
+
+    recent_games = []
+    owned_games = []
+
     try:
-        response = http_request(
-            STEAM_PROFILE_XML_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            },
-            timeout=15,
-        )
+        response = http_request(f"{STEAM_RECENT_GAMES_URL}?{query}", timeout=15)
         response.raise_for_status()
-    except RequestException:
-        return "⚠️ Nie udało się połączyć z profilem Steam."
+        data = json.loads(response.text)
+        if isinstance(data, dict):
+            recent_games = data.get("response", {}).get("games", []) or []
+    except (RequestException, json.JSONDecodeError, TypeError):
+        pass
 
-    xml_text = response.text
+    try:
+        response = http_request(f"{STEAM_GAMES_URL}?{query}", timeout=15)
+        response.raise_for_status()
+        data = json.loads(response.text)
+        if isinstance(data, dict):
+            owned_games = data.get("response", {}).get("games", []) or []
+    except (RequestException, json.JSONDecodeError, TypeError):
+        pass
 
-    if "<error>" in xml_text or "The specified profile could not be found" in xml_text:
-        return "⚠️ Profil Steam nie został znaleziony lub jest prywatny."
+    if not recent_games and not owned_games:
+        return (
+            "⚠️ Nie udało się pobrać gier z API Steama. "
+            "Upewnij się, że Twój profil i szczegóły gier są publiczne."
+        )
 
-    recent_games_match = re.search(r"<recentgames>(.*?)</recentgames>", xml_text, re.DOTALL)
-    if not recent_games_match:
-        return "💤 Brak publicznych informacji o ostatnio granych tytułach na profilu."
+    owned_by_appid = {game.get("appid"): game for game in owned_games if game.get("appid") is not None}
 
-    games_block = recent_games_match.group(1)
-    
-    game_match = re.search(r"<game>(.*?)</game>", games_block, re.DOTALL)
-    if not game_match:
-        return "💤 Brak gier w sekcji ostatniej aktywności."
+    # Wymuszenie poprawnej kolejności gier z ostatnich 2 tygodni (najwięcej czasu / najświeższe na górze)
+    if recent_games:
+        recent_games.sort(
+            key=lambda g: int(g.get("playtime_2weeks", 0) or 0),
+            reverse=True
+        )
+        last_game = recent_games[0]
+    elif owned_games:
+        games_with_playtime = [g for g in owned_games if int(g.get("playtime_forever", 0) or 0) > 0]
+        if games_with_playtime:
+            last_game = games_with_playtime[0]
+        else:
+            return "💤 Brak aktywności w grach."
+    else:
+        return "💤 Brak informacji o grach."
 
-    game_content = game_match.group(1)
+    app_id = last_game.get("appid")
+    matched_owned = owned_by_appid.get(app_id, {})
 
-    def extract_tag(tag: str) -> str:
-        m = re.search(f"<{tag}>(.*?)</{tag}>", game_content, re.DOTALL)
-        return html.unescape(m.group(1).strip()) if m else ""
+    game_name = str(last_game.get("name", "Nieznana gra"))
+    total_minutes = int(
+        matched_owned.get("playtime_forever")
+        or last_game.get("playtime_forever")
+        or 0
+    )
+    recent_minutes = int(
+        last_game.get("playtime_2weeks")
+        or matched_owned.get("playtime_2weeks")
+        or 0
+    )
 
-    game_name = extract_tag("name")
-    hours_recent = extract_tag("hoursLast2Weeks")
-    hours_forever = extract_tag("hoursOnRecord")
-
-    if not game_name:
-        return "⚠️ Nie udało się odczytać nazwy ostatniej gry ze struktury profilu."
+    if total_minutes <= 0:
+        return "⚠️ Steam nie zwrócił łącznego czasu dla ostatniej gry."
 
     return (
         "🎮 **Ostatnia gra na Steamie (`geshurapl`):**\n"
         f"📌 **{game_name}**\n"
-        f"⏱️ Łączny czas gry: **{format_playtime(hours_forever)}**\n"
-        f"📅 W ostatnich 2 tygodniach: **{format_playtime(hours_recent)}**"
+        f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
+        f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
     )
 
 
