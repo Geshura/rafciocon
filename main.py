@@ -1,5 +1,4 @@
 import html
-import json
 import os
 import re
 from typing import Any
@@ -56,103 +55,77 @@ def http_request(
         raise RequestException(str(exception)) from exception
 
 
-STEAM_PROFILE_URL = "https://steamcommunity.com/id/geshurapl/games/?tab=recent"
+# Oficjalny endpoint XML profilu Steam (działa dla niestandardowych URL-i i jest całkowicie publiczny)
+STEAM_PROFILE_XML_URL = "https://steamcommunity.com/id/geshurapl/?xml=1"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 
-def format_playtime(minutes: int) -> str:
-    hours, remaining_minutes = divmod(minutes, 60)
-    if hours and remaining_minutes:
-        return f"{hours} godz. {remaining_minutes} min"
-    if hours:
-        return f"{hours} godz."
-    return f"{remaining_minutes} min"
+def format_playtime(hours_str: str) -> str:
+    try:
+        # Czas w XML profilu bywa podawany jako string z przecinkami/kropkami, np. "50,3" lub "12"
+        clean_val = hours_str.replace(",", ".").strip()
+        hours_float = float(clean_val)
+        total_minutes = int(round(hours_float * 60))
+        hours, remaining_minutes = divmod(total_minutes, 60)
+        if hours and remaining_minutes:
+            return f"{hours} godz. {remaining_minutes} min"
+        if hours:
+            return f"{hours} godz."
+        return f"{remaining_minutes} min"
+    except (ValueError, TypeError):
+        return f"{hours_str} godz."
 
 
-def get_profile_recent_game() -> dict[str, Any] | None:
+def get_steam_status() -> str:
     try:
         response = http_request(
-            STEAM_PROFILE_URL,
+            STEAM_PROFILE_XML_URL,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             },
             timeout=15,
         )
         response.raise_for_status()
     except RequestException:
-        return None
+        return "⚠️ Nie udało się połączyć z profilem Steam."
 
-    # Szukanie zmiennej JavaScript rgGames ze spisem gier na profilu
-    match = re.search(
-        r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;",
-        response.text,
-        re.DOTALL,
-    )
-    if match:
-        try:
-            games = json.loads(html.unescape(match.group(1)))
-            if isinstance(games, list) and games and isinstance(games[0], dict):
-                return games[0]
-        except (json.JSONDecodeError, TypeError):
-            pass
+    xml_text = response.text
 
-    # Alternatywne szukanie zserializowanego JSON-a w strukturze profilu
-    match_json = re.search(
-        r"data-profile-json=[\"']({.*?})[\"']",
-        response.text,
-        re.DOTALL,
-    )
-    if match_json:
-        try:
-            profile_data = json.loads(html.unescape(match_json.group(1)))
-            games = profile_data.get("rgGames")
-            if isinstance(games, list) and games and isinstance(games[0], dict):
-                first_game = games[0]
-                return {
-                    "name": first_game.get("name"),
-                    "playtime_forever": int(
-                        first_game.get("hours_forever", 0) * 60
-                        if "hours_forever" in first_game
-                        else first_game.get("playtime_forever", 0)
-                    ),
-                    "playtime_2weeks": int(
-                        first_game.get("hours_2weeks", 0) * 60
-                        if "hours_2weeks" in first_game
-                        else first_game.get("playtime_2weeks", 0)
-                    ),
-                }
-        except (json.JSONDecodeError, TypeError):
-            pass
+    # Sprawdzamy czy profil jest publiczny i czy XML nie jest zablokowany
+    if "<error>" in xml_text or "The specified profile could not be found" in xml_text:
+        return "⚠️ Profil Steam nie został znaleziony lub jest prywatny."
 
-    return None
+    # Wyciągamy sekcję ostatnich gier z XML profilu (np. <recentgames><game>...</game></recentgames>)
+    recent_games_match = re.search(r"<recentgames>(.*?)</recentgames>", xml_text, re.DOTALL)
+    if not recent_games_match:
+        return "💤 Brak publicznych informacji o ostatnio granych tytułach na profilu."
 
+    games_block = recent_games_match.group(1)
+    
+    # Znajdujemy pierwszą grę z listy
+    game_match = re.search(r"<game>(.*?)</game>", games_block, re.DOTALL)
+    if not game_match:
+        return "💤 Brak gier w sekcji ostatniej aktywności."
 
-def get_steam_status() -> str:
-    game = get_profile_recent_game()
-    if not game:
-        return (
-            "⚠️ Nie udało się pobrać danych ze strony profilu Steam (`geshurapl`). "
-            "Upewnij się, że Twój profil oraz szczegóły gier są ustawione jako **Publiczne**."
-        )
+    game_content = game_match.group(1)
 
-    try:
-        game_name = str(game.get("name", "Nieznana gra"))
-        total_minutes = int(game.get("playtime_forever", 0) or 0)
-        recent_minutes = int(game.get("playtime_2weeks", 0) or 0)
-    except (AttributeError, TypeError, ValueError):
-        return "⚠️ Steam zwrócił nieprawidłowe dane o czasie gry."
+    # Parsujemy pola XML za pomocą wyrażeń regularnych
+    def extract_tag(tag: str) -> str:
+        m = re.search(f"<{tag}>(.*?)</{tag}>", game_content, re.DOTALL)
+        return html.unescape(m.group(1).strip()) if m else ""
 
-    if total_minutes <= 0:
-        return "⚠️ Steam nie zwrócił łącznego czasu dla ostatniej gry."
+    game_name = extract_tag("name")
+    hours_recent = extract_tag("hoursLast2Weeks")
+    hours_forever = extract_tag("hoursOnRecord")
+
+    if not game_name:
+        return "⚠️ Nie udało się odczytać nazwy ostatniej gry ze struktury profilu."
 
     return (
         "🎮 **Ostatnia gra na Steamie (`geshurapl`):**\n"
         f"📌 **{game_name}**\n"
-        f"⏱️ Łączny czas gry: **{format_playtime(total_minutes)}**\n"
-        f"📅 W ostatnich 2 tygodniach: **{format_playtime(recent_minutes)}**"
+        f"⏱️ Łączny czas gry: **{format_playtime(hours_forever)}**\n"
+        f"📅 W ostatnich 2 tygodniach: **{format_playtime(hours_recent)}**"
     )
 
 
