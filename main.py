@@ -125,24 +125,38 @@ def get_steam_status() -> str:
         return "💤 Brak gier zapisanych w bibliotece Steam."
 
     profile_recent_game = get_profile_recent_game()
-    if profile_recent_game:
-        last_game = profile_recent_game
-        owned_by_appid = {
-            game.get("appid"): game for game in (owned_games or [])
-        }
+    if owned_games:
+        try:
+            games_by_appid = {
+                game.get("appid"): game
+                for game in owned_games
+                if game.get("appid") is not None
+            }
+            games_with_last_played = [
+                game
+                for game in games_by_appid.values()
+                if int(game.get("playtime_forever", 0) or 0) > 0
+                and int(game.get("rtime_last_played", 0) or 0) > 0
+            ]
+            last_game = max(
+                games_with_last_played,
+                key=lambda game: int(game.get("rtime_last_played", 0)),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return "⚠️ Steam zwrócił nieprawidłową datę ostatniego uruchomienia gry."
+        if not games_with_last_played:
+            return "💤 Steam nie zwrócił daty ostatniego uruchomienia gry."
         recent_by_appid = {
             game.get("appid"): game for game in (recent_games or [])
         }
-        total_source = owned_by_appid.get(last_game.get("appid")) or last_game
+        total_source = games_by_appid.get(last_game.get("appid")) or last_game
         recent_source = recent_by_appid.get(last_game.get("appid")) or last_game
+    elif profile_recent_game:
+        last_game = profile_recent_game
+        total_source = last_game
+        recent_source = last_game
     elif recent_games:
-        try:
-            last_game = max(
-                recent_games,
-                key=lambda game: int(game.get("playtime_2weeks", 0) or 0),
-            )
-        except (AttributeError, TypeError, ValueError):
-            return "⚠️ Steam zwrócił nieprawidłowy czas gry."
+        last_game = recent_games[0]
         owned_by_appid = {
             game.get("appid"): game for game in (owned_games or [])
         }
