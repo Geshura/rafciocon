@@ -4,9 +4,9 @@ from typing import Any
 import requests
 
 
-STEAM_API_URL = "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/"
+STEAM_API_URL = "https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
-STEAM_ID = os.getenv("STEAM_ID")
+STEAM_ID = os.getenv("STEAM_ID", "76561198034890618")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 
@@ -32,6 +32,8 @@ def get_steam_status() -> str:
             params={
                 "key": STEAM_API_KEY,
                 "steamid": STEAM_ID,
+                "include_appinfo": 1,
+                "include_played_free_games": 1,
                 "format": "json",
             },
             timeout=15,
@@ -53,9 +55,18 @@ def get_steam_status() -> str:
     if not games:
         return "💤 Brak publicznej historii ostatnio uruchamianych gier."
 
-    last_game = games[0]
-    if not isinstance(last_game, dict):
-        return "⚠️ Steam Web API zwróciło nieprawidłowe dane gry."
+    games_with_playtime = [
+        game
+        for game in games
+        if isinstance(game, dict) and game.get("rtime_last_played", 0)
+    ]
+    if not games_with_playtime:
+        return "💤 Brak publicznej historii ostatnio uruchamianych gier."
+
+    last_game = max(
+        games_with_playtime,
+        key=lambda game: int(game.get("rtime_last_played", 0)),
+    )
 
     game_name = last_game.get("name", "Nieznana gra")
     try:
