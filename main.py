@@ -105,6 +105,10 @@ def get_latest_steam_activity() -> dict[str, str]:
                 game.locator(".game_name").first.text_content()
                 or "Nieznana gra"
             ).strip()
+            game_image = (
+                game.locator("img.game_capsule").first.get_attribute("src")
+                or ""
+            ).strip()
             game_details = game.locator(".game_info_details").first.inner_text()
             recent_summary = page.locator(
                 ".recentgame_recentplaytime"
@@ -121,6 +125,7 @@ def get_latest_steam_activity() -> dict[str, str]:
     return {
         "profile_name": profile_name,
         "game_name": game_name,
+        "game_image": game_image,
         "total": total,
         "recent": recent,
     }
@@ -157,20 +162,21 @@ def send_to_discord(activity: dict[str, str]) -> None:
                     "inline": True,
                 }
             )
+        embed = {
+            "title": "Steam — ostatnia aktywność",
+            "description": (
+                f"Profil **{activity['profile_name']}** "
+                "uruchomił ostatnio:"
+            ),
+            "url": PROFILE_URL,
+            "color": 0x1B9FFF,
+            "fields": fields,
+            "footer": {"text": "rafciocon • Steam monitor"},
+        }
+        if activity.get("game_image"):
+            embed["thumbnail"] = {"url": activity["game_image"]}
         payload_data = {
-            "embeds": [
-                {
-                    "title": "Steam — ostatnia aktywność",
-                    "description": (
-                        f"Profil **{activity['profile_name']}** "
-                        "uruchomił ostatnio:"
-                    ),
-                    "url": PROFILE_URL,
-                    "color": 0x1B9FFF,
-                    "fields": fields,
-                    "footer": {"text": "rafciocon • Steam monitor"},
-                }
-            ],
+            "embeds": [embed],
             "allowed_mentions": {"parse": []},
         }
 
