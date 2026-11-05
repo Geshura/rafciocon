@@ -109,6 +109,12 @@ def get_latest_steam_activity() -> dict[str, str]:
                 game.locator("img.game_capsule").first.get_attribute("src")
                 or ""
             ).strip()
+            app_id_match = re.search(r"/apps/(\d+)/", game_image)
+            if app_id_match:
+                game_image = (
+                    "https://cdn.cloudflare.steamstatic.com/steam/apps/"
+                    f"{app_id_match.group(1)}/header.jpg"
+                )
             game_details = game.locator(".game_info_details").first.inner_text()
             recent_summary = page.locator(
                 ".recentgame_recentplaytime"
@@ -146,39 +152,40 @@ def send_to_discord(activity: dict[str, str]) -> None:
             {
                 "name": "🎮 Ostatnia gra",
                 "value": f"**{activity['game_name']}**",
-                "inline": False,
             },
             {
-                "name": "⏱️ Łączny czas",
+                "name": "⏱️ Czas gry (ogólnie)",
                 "value": f"**{activity['total']} godz.**",
-                "inline": True,
             },
         ]
         if recent != "?":
             fields.append(
                 {
-                    "name": "📅 Ostatnie 2 tygodnie",
+                    "name": "📅 Czas gry (ostatnie 2 tygodnie)",
                     "value": f"**{recent} godz.**",
                     "inline": True,
                 }
             )
-        embed = {
-            "title": "Steam — ostatnia aktywność",
-            "description": (
-                f"Profil **{activity['profile_name']}** "
-                "uruchomił ostatnio:"
-            ),
-            "url": PROFILE_URL,
-            "color": 0x1B9FFF,
-            "fields": fields,
-            "footer": {"text": "rafciocon • Steam monitor"},
-        }
-        if activity.get("game_image"):
-            embed["thumbnail"] = {"url": activity["game_image"]}
-        payload_data = {
-            "embeds": [embed],
-            "allowed_mentions": {"parse": []},
-        }
+    embed = {
+        "title": "RAFCION",
+        "description": f"**{activity['profile_name']}** uruchomił ostatnio:",
+        "url": PROFILE_URL,
+        "color": 34303,
+        "fields": fields,
+        "footer": {
+            "text": "RAFCIOCON",
+            "icon_url": "https://i.imgur.com/cblxnZz.png",
+        },
+    }
+    if activity.get("game_image"):
+        embed["image"] = {"url": activity["game_image"]}
+    embed["thumbnail"] = {"url": "https://i.imgur.com/cblxnZz.png"}
+    payload_data = {
+        "content": None,
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+        "attachments": [],
+    }
 
     payload = json.dumps(
         payload_data
