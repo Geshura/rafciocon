@@ -20,10 +20,20 @@ jobs:
       - name: Instalacja zależności
         run: |
           pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Odtworzenie sesji Steam
+        env:
+          STEAM_STORAGE_STATE_B64: ${{ secrets.STEAM_STORAGE_STATE_B64 }}
+        run: |
+          if [ -z "$STEAM_STORAGE_STATE_B64" ]; then
+            echo "Brak sekretu STEAM_STORAGE_STATE_B64"
+            exit 1
+          fi
+          printf '%s' "$STEAM_STORAGE_STATE_B64" | base64 --decode > steam-storage-state.json
 
       - name: Uruchomienie skryptu sprawdzającego
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
         run: |
           python main.py

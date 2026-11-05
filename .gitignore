@@ -1,0 +1,8 @@
+steam_debug.html
+steam_rendered_profile.html
+.steam-playwright-profile/
+steam-storage-state.json
+steam-storage-state.json.b64
+test
+__pycache__/
+*.py[cod]
