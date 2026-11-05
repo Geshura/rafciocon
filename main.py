@@ -15,7 +15,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 STEAM_ID = os.getenv("STEAM_ID", "76561198034890618").strip()
 PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/"
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1567676263769051196/JAlTVOPxQwfoJhtu5MknY9pT55iUAkO6xLRKbzIqF1R8ByatlA6DXx0Bk4pqGM_CRk6p").strip()
 STEAM_STORAGE_STATE = os.getenv("STEAM_STORAGE_STATE", "steam-storage-state.json")
 TARGET_GAME = os.getenv("TARGET_GAME", "").strip()
 TIMEOUT = 30
