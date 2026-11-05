@@ -1,39 +1,33 @@
-name: Steam Status Check
+name: Steam Automation
 
 on:
-  schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
-  check-steam:
+  run-script:
     runs-on: ubuntu-latest
     steps:
-      - name: Pobranie kodu repozytorium
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Konfiguracja środowiska Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Instalacja zależności
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
-
-      - name: Odtworzenie sesji Steam
+      - name: Check and Load Steam Storage State
         env:
           STEAM_STORAGE_STATE_B64: ${{ secrets.STEAM_STORAGE_STATE_B64 }}
         run: |
           if [ -z "$STEAM_STORAGE_STATE_B64" ]; then
-            echo "Brak sekretu STEAM_STORAGE_STATE_B64"
+            echo "Brak sekretu STEAM_STORAGE_STATE_B64. Upewnij się, że został dodany w ustawieniach repozytorium (Settings -> Secrets and variables -> Actions)."
             exit 1
           fi
-          printf '%s' "$STEAM_STORAGE_STATE_B64" | base64 --decode > steam-storage-state.json
+          
+          echo "Sekret znaleziony. Dekodowanie stanu sesji..."
+          # Przykład dekodowania zmiennej base64 do pliku konfiguracyjnego/sesji
+          echo "$STEAM_STORAGE_STATE_B64" | base64 --decode > steam_state.json
+          echo "Stan Steam został pomyślnie zapisany do pliku."
 
-      - name: Uruchomienie skryptu sprawdzającego
+      - name: Run main script
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          STEAM_STORAGE_STATE_B64: ${{ secrets.STEAM_STORAGE_STATE_B64 }}
         run: |
+          # Tutaj uruchamiasz swój główny skrypt (np. python lub node)
           python main.py
