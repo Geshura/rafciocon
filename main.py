@@ -15,7 +15,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 STEAM_ID = os.getenv("STEAM_ID", "76561198034890618").strip()
 PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/"
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1567676263769051196/JAlTVOPxQwfoJhtu5MknY9pT55iUAkO6xLRKbzIqF1R8ByatlA6DXx0Bk4pqGM_CRk6p").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 STEAM_STORAGE_STATE = os.getenv("STEAM_STORAGE_STATE", "steam-storage-state.json")
 TARGET_GAME = os.getenv("TARGET_GAME", "").strip()
 TIMEOUT = 30
@@ -34,7 +34,7 @@ def configure_page(page: object) -> None:
     )
 
 
-def get_latest_steam_activity() -> str:
+def get_latest_steam_activity() -> dict[str, str]:
     storage_state = Path(STEAM_STORAGE_STATE)
     if not storage_state.is_file():
         raise RuntimeError(
@@ -94,8 +94,10 @@ def get_latest_steam_activity() -> str:
             games = page.locator(".recent_game")
             if not games.count():
                 return (
-                    "⚠️ Steam nie wyświetlił ostatnio granych gier.\n"
-                    "Sprawdź prywatność profilu i aktywność z ostatnich 2 tygodni."
+                    {"warning": (
+                        "Steam nie wyświetlił ostatnio granych gier.\n"
+                        "Sprawdź prywatność profilu i aktywność z ostatnich 2 tygodni."
+                    )}
                 )
 
             game = games.first
@@ -116,22 +118,64 @@ def get_latest_steam_activity() -> str:
     total = total_match.group(1) if total_match else "?"
     recent = recent_match.group(1) if recent_match else "?"
 
-    message = (
-        f"🎮 **Ostatnia gra na Steamie ({profile_name}):**\n"
-        f"📌 **{game_name}**\n"
-        f"⏱️ Łącznie: **{total} godz.**"
-    )
-    if recent != "?":
-        message += f"\n📅 Ostatnie 2 tygodnie: **{recent} godz.**"
-    return message
+    return {
+        "profile_name": profile_name,
+        "game_name": game_name,
+        "total": total,
+        "recent": recent,
+    }
 
 
-def send_to_discord(message: str) -> None:
+def send_to_discord(activity: dict[str, str]) -> None:
     if not DISCORD_WEBHOOK_URL:
         raise RuntimeError("Brak zmiennej DISCORD_WEBHOOK_URL.")
 
+    if "warning" in activity:
+        payload_data = {
+            "content": f"⚠️ {activity['warning']}",
+            "allowed_mentions": {"parse": []},
+        }
+    else:
+        recent = activity.get("recent", "?")
+        fields = [
+            {
+                "name": "🎮 Ostatnia gra",
+                "value": f"**{activity['game_name']}**",
+                "inline": False,
+            },
+            {
+                "name": "⏱️ Łączny czas",
+                "value": f"**{activity['total']} godz.**",
+                "inline": True,
+            },
+        ]
+        if recent != "?":
+            fields.append(
+                {
+                    "name": "📅 Ostatnie 2 tygodnie",
+                    "value": f"**{recent} godz.**",
+                    "inline": True,
+                }
+            )
+        payload_data = {
+            "embeds": [
+                {
+                    "title": "Steam — ostatnia aktywność",
+                    "description": (
+                        f"Profil **{activity['profile_name']}** "
+                        "uruchomił ostatnio:"
+                    ),
+                    "url": PROFILE_URL,
+                    "color": 0x1B9FFF,
+                    "fields": fields,
+                    "footer": {"text": "rafciocon • Steam monitor"},
+                }
+            ],
+            "allowed_mentions": {"parse": []},
+        }
+
     payload = json.dumps(
-        {"content": message, "allowed_mentions": {"parse": []}}
+        payload_data
     ).encode("utf-8")
     req = request.Request(
         DISCORD_WEBHOOK_URL,
@@ -150,10 +194,15 @@ if __name__ == "__main__":
     try:
         if not STEAM_ID:
             raise RuntimeError("Brak STEAM_ID.")
-        message = get_latest_steam_activity()
-        print(message)
-        if not message.startswith("⚠️"):
-            send_to_discord(message)
+        activity = get_latest_steam_activity()
+        if "warning" in activity:
+            print(f"⚠️ {activity['warning']}")
+        else:
+            print(
+                f"🎮 {activity['game_name']} | "
+                f"{activity['total']} godz. łącznie"
+            )
+            send_to_discord(activity)
     except Exception as exc:
         print(f"[BŁĄD] {exc}")
         sys.exit(1)
