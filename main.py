@@ -80,9 +80,12 @@ def get_latest_steam_activity() -> str:
                 )
 
             if TARGET_GAME:
-                print(
-                    f"[STEAM] {'Znaleziono' if TARGET_GAME.casefold() in page_content.casefold() else 'Nie znaleziono'}: {TARGET_GAME}"
+                result = (
+                    "Znaleziono"
+                    if TARGET_GAME.casefold() in page_content.casefold()
+                    else "Nie znaleziono"
                 )
+                print(f"[STEAM] {result}: {TARGET_GAME}")
 
             profile_name = (
                 page.locator(".actual_persona_name").first.text_content()

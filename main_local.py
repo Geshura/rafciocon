@@ -22,7 +22,7 @@ STEAM_ID = os.getenv("STEAM_ID", "76561198034890618").strip()
 PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/"
 
 # Ustaw zmienne środowiskowe zamiast wpisywać sekrety do kodu.
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1567676263769051196/JAlTVOPxQwfoJhtu5MknY9pT55iUAkO6xLRKbzIqF1R8ByatlA6DXx0Bk4pqGM_CRk6p").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 TARGET_GAME = os.getenv("TARGET_GAME", "").strip()
 STEAM_BROWSER_PROFILE = os.getenv(
     "STEAM_BROWSER_PROFILE", ".steam-playwright-profile"

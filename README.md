@@ -2,7 +2,7 @@
 
 Skrypt odczytuje ze strony Steam ostatnio uruchamianą grę użytkownika, jej
 łączny czas gry oraz czas z ostatnich dwóch tygodni, a następnie wysyła status
-na Discorda za pomocą Steam Web API.
+na Discorda. Wariant automatyczny używa Playwright i zapisanej sesji Steam.
 
 ## Konfiguracja
 
@@ -11,8 +11,7 @@ Ustaw zmienne środowiskowe:
 - `STEAM_ID` - 64-bitowy Steam ID użytkownika (domyślnie: `76561198034890618`)
 - `DISCORD_WEBHOOK_URL` - adres webhooka Discord
 
-Profil Steam musi udostępniać dane gier publicznie. Klucz API można uzyskać na
-stronie [Steam Web API Key](https://steamcommunity.com/dev/apikey).
+Profil Steam musi udostępniać dane gier dla konta użytego w zapisanej sesji.
 
 Przykład dla PowerShell:
 
