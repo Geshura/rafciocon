@@ -1,10 +1,10 @@
+import json
 import os
 import re
 import sys
 from typing import Optional
 
-import requests
-from bs4 import BeautifulSoup, Tag
+requests = __import__("requests")
 
 
 # ============================================================
@@ -15,7 +15,6 @@ STEAM_ID = os.getenv("STEAM_ID", "76561198034890618").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 PROFILE_URL = f"https://steamcommunity.com/profiles/{STEAM_ID}/"
-RECENT_URL = f"{PROFILE_URL}games/?tab=recent"
 
 MAX_GAMES = 5
 TIMEOUT = 20
@@ -34,234 +33,74 @@ session.headers.update(HEADERS)
 
 
 # ============================================================
-# HTTP
+# POBIERANIE DANYCH Z PROFILU STEAM (JSON)
 # ============================================================
 
-def fetch_page(url: str) -> tuple[BeautifulSoup, str]:
-    response = session.get(url, timeout=TIMEOUT)
+def get_profile_data() -> tuple[str, list[dict]]:
+    """
+    Pobiera dane profilu oraz osadzone w kodzie strony JSON-y z grami,
+    omijając problem braku statycznych elementów w HTML.
+    """
+    print(f"[STEAM] Pobieranie profilu: {PROFILE_URL}")
+    response = session.get(PROFILE_URL, timeout=TIMEOUT)
     response.raise_for_status()
+    html_text = response.text
 
-    # Zwracamy HTML dokładnie tej strony, którą pobraliśmy.
-    soup = BeautifulSoup(response.text, "html.parser")
-    return soup, response.text
+    profile_name = "Użytkownik Steam"
+    
+    # Wyciąganie nazwy profilu
+    match_name = re.search(r'<span class="actual_persona_name">(.*?)</span>', html_text)
+    if match_name:
+        profile_name = match_name.group(1).strip()
 
-
-# ============================================================
-# PARSOWANIE
-# ============================================================
-
-def clean_text(element: Optional[Tag]) -> str:
-    if element is None:
-        return ""
-    return " ".join(element.stripped_strings).strip()
-
-
-def get_appid_from_url(url: str) -> Optional[str]:
-    match = re.search(r"/app/(\d+)", url or "")
-    return match.group(1) if match else None
-
-
-def find_appid(block: Tag) -> Optional[str]:
-    for link in block.select("a[href]"):
-        appid = get_appid_from_url(link.get("href", ""))
-        if appid:
-            return appid
-    return None
-
-
-def find_game_name(block: Tag) -> Optional[str]:
-    # Typowe nazwy w wierszach listy gier Steam.
-    selectors = (
-        ".gameListRowItemName",
-        ".game_name",
-        ".game_name a",
-        ".recent_game_name",
-        ".recentgame_name",
-        "a[href*='/app/']",
-    )
-
-    for selector in selectors:
-        node = block.select_one(selector)
-        if node:
-            # Jeśli to link z obrazkiem, preferuj tekst/alt, nie pusty tekst.
-            name = clean_text(node)
-            if name:
-                return name
-
-            image = node.select_one("img")
-            if image:
-                name = (
-                    image.get("alt", "").strip()
-                    or image.get("title", "").strip()
-                )
-                if name:
-                    return name
-
-    image = block.select_one("img")
-    if image:
-        name = (
-            image.get("alt", "").strip()
-            or image.get("title", "").strip()
-        )
-        if name:
-            return name
-
-    return None
-
-
-def find_hours(block: Tag, kind: str) -> Optional[str]:
-    """
-    kind='recent' - czas z ostatnich dwóch tygodni
-    kind='total'  - łączny czas na liczniku
-
-    Odczytujemy osobne elementy, jeśli istnieją, a potem tekst wiersza.
-    """
-    selectors = {
-        "recent": (
-            ".gameListRowItemHours",
-            ".game_info_details",
-            ".recentgame_recentplaytime",
-            ".gameListRowItemRecentPlaytime",
-        ),
-        "total": (
-            ".gameListRowItemHours",
-            ".game_info_details",
-            ".gameListRowItemPlaytime",
-        ),
-    }
-
-    for selector in selectors[kind]:
-        for node in block.select(selector):
-            text = clean_text(node)
-            value = parse_hours_from_text(text, kind)
-            if value is not None:
-                return value
-
-    return parse_hours_from_text(clean_text(block), kind)
-
-
-def parse_hours_from_text(text: str, kind: str) -> Optional[str]:
-    text = text.replace(",", ".")
-
-    if kind == "recent":
-        patterns = (
-            r"([\d.]+)\s*(?:hrs?|hours?)\s*(?:in\s*)?"
-            r"(?:the\s*)?(?:past|last)\s*2\s*weeks",
-            r"([\d.]+)\s*(?:hrs?|hours?)\s*last\s*two\s*weeks",
-            r"([\d.]+)\s*(?:godz\.?|godziny|godzin)\s*"
-            r"(?:w\s*)?(?:ostatnich\s*)?2\s*tygodniach",
-        )
-    else:
-        patterns = (
-            r"([\d.]+)\s*(?:hrs?|hours?)\s*on\s*record",
-            r"([\d.]+)\s*(?:hrs?|hours?)\s*total",
-            r"([\d.]+)\s*(?:godz\.?|godziny|godzin)\s*łącznie",
-        )
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-
-    return None
-
-
-def parse_game_rows(soup: BeautifulSoup) -> list[dict]:
-    """
-    Parsuje wiersze gier w kolejności DOM.
-    Celowo NIE sortuje ich po czasie gry ani AppID.
-    """
     games = []
-    seen_appids = set()
 
-    # Na stronie /games/?tab=recent Steam zwykle renderuje wiersze
-    # listy gier jako .gameListRow.
-    selectors = (
-        "#games_list_rows .gameListRow",
-        ".gameListRow",
-        ".recent_game",
-        ".recentgame",
-    )
+    # Steam umieszcza dane gier w zmiennej JavaScript rgGames lub jako data-profile-json
+    match_games = re.search(r"(?:var\s+)?rgGames\s*=\s*(\[.*?\])\s*;", html_text, re.DOTALL)
+    
+    if not match_games:
+        # Alternatywne szukanie w strukturach JSON profilu
+        match_json = re.search(r"data-profile-json=[\"']({.*?})[\"']", html_text, re.DOTALL)
+        if match_json:
+            try:
+                profile_json = json.loads(match_json.group(1).replace("&quot;", '"'))
+                raw_games = profile_json.get("rgGames", [])
+                if isinstance(raw_games, list):
+                    games = raw_games
+            except Exception:
+                pass
+    else:
+        try:
+            games = json.loads(match_games.group(1))
+        except Exception:
+            pass
 
-    rows = []
-    for selector in selectors:
-        found = soup.select(selector)
-        if found:
-            rows = found
-            break
-
-    for row in rows:
-        appid = find_appid(row)
-        name = find_game_name(row)
-
-        if not appid or not name or appid in seen_appids:
+    parsed_games = []
+    for g in games[:MAX_GAMES]:
+        if not isinstance(g, dict):
             continue
+        
+        appid = str(g.get("appid", ""))
+        name = g.get("name", "Nieznana gra")
+        
+        # Czas z ostatnich 2 tygodni (w minutach lub godzinach w zależności od struktury)
+        hours_2weeks = g.get("hours_2weeks", g.get("playtime_2weeks", 0))
+        if isinstance(hours_2weeks, (int, float)) and hours_2weeks > 100:  # Jeśli to minuty
+            hours_2weeks = round(hours_2weeks / 60, 1)
 
-        seen_appids.add(appid)
+        # Łączny czas
+        hours_forever = g.get("hours_forever", g.get("playtime_forever", 0))
+        if isinstance(hours_forever, (int, float)) and hours_forever > 1000:  # Jeśli to minuty
+            hours_forever = round(hours_forever / 60, 1)
 
-        games.append({
+        parsed_games.append({
             "appid": appid,
             "name": name,
-            "recent": find_hours(row, "recent"),
-            "total": find_hours(row, "total"),
+            "recent": str(hours_2weeks) if hours_2weeks else None,
+            "total": str(hours_forever) if hours_forever else None,
         })
 
-    return games
-
-
-# ============================================================
-# OSTATNIA AKTYWNOŚĆ
-# ============================================================
-
-def get_profile_name(soup: BeautifulSoup) -> str:
-    for selector in (".actual_persona_name", ".profile_header_name"):
-        node = soup.select_one(selector)
-        if node:
-            name = clean_text(node)
-            if name:
-                return name
-    return "Użytkownik Steam"
-
-
-def get_recent_activity() -> tuple[str, list[dict]]:
-    """
-    Najpierw czytamy wyłącznie zakładkę Recent.
-    Nie używamy GetRecentlyPlayedGames jako fallbacku, bo API może
-    sortować wynik według czasu gry z 14 dni, a nie kolejności profilu.
-    """
-    print(f"[STEAM] Pobieranie zakładki Recent: {RECENT_URL}")
-
-    soup, html = fetch_page(RECENT_URL)
-    games = parse_game_rows(soup)
-
-    if games:
-        print(
-            f"[STEAM] Znaleziono {len(games)} gier "
-            "(kolejność HTML, bez sortowania)."
-        )
-        return html, games[:MAX_GAMES]
-
-    # Fallback tylko do sekcji ostatniej aktywności na profilu.
-    # Nie łączymy wyników obu stron, aby nie zmieniać kolejności.
-    print("[STEAM] Nie znaleziono wierszy na zakładce Recent.")
-    print("[STEAM] Sprawdzam sekcję ostatniej aktywności profilu.")
-
-    profile_soup, profile_html = fetch_page(PROFILE_URL)
-    games = parse_game_rows(profile_soup)
-
-    if games:
-        print(
-            f"[STEAM] Znaleziono {len(games)} gier na profilu "
-            "(kolejność HTML, bez sortowania)."
-        )
-        return profile_html, games[:MAX_GAMES]
-
-    # Zapis diagnostyczny do sprawdzenia rzeczywistej odpowiedzi Steam.
-    with open("steam_debug.html", "w", encoding="utf-8") as file:
-        file.write(html)
-
-    print("[DEBUG] Zapisano HTML do steam_debug.html.")
-    return html, []
+    return profile_name, parsed_games
 
 
 # ============================================================
@@ -269,10 +108,7 @@ def get_recent_activity() -> tuple[str, list[dict]]:
 # ============================================================
 
 def create_message() -> str:
-    profile_soup, _ = fetch_page(PROFILE_URL)
-    profile_name = get_profile_name(profile_soup)
-
-    _, games = get_recent_activity()
+    profile_name, games = get_profile_data()
 
     lines = [
         f"🎮 **Steam – {profile_name}**",
@@ -285,15 +121,14 @@ def create_message() -> str:
     if not games:
         lines.extend([
             "",
-            "⚠️ Nie udało się odczytać listy gier z HTML Steam.",
-            "Sprawdź plik steam_debug.html oraz ustawienia "
-            "prywatności szczegółów gier.",
+            "⚠️ Nie udało się odczytać listy gier ze struktury profilu Steam.",
+            "Upewnij się, że ustawienia prywatności szczegółów gier są publiczne.",
         ])
     else:
         for index, game in enumerate(games, start=1):
             lines.append(f"\n**{index}. {game['name']}**")
 
-            if game.get("recent") is not None:
+            if game.get("recent") is not None and float(game["recent"]) > 0:
                 lines.append(
                     f"📅 Ostatnie 2 tygodnie: {game['recent']} godz."
                 )
@@ -303,20 +138,20 @@ def create_message() -> str:
                     f"⏱️ Łącznie: {game['total']} godz."
                 )
 
-            lines.append(
-                f"🔗 https://store.steampowered.com/app/{game['appid']}/"
-            )
+            if game.get("appid"):
+                lines.append(
+                    f"🔗 https://store.steampowered.com/app/{game['appid']}/"
+                )
 
     lines.extend([
         "",
         f"🔗 [Profil Steam]({PROFILE_URL})",
         "",
-        "🤖 Źródło: zakładka Recent na publicznym profilu Steam.",
+        "🤖 Źródło: publiczny profil Steam.",
     ])
 
     message = "\n".join(lines)
 
-    # Limit Discorda dla zwykłej wiadomości.
     if len(message) > 1900:
         message = message[:1890] + "\n…"
 
