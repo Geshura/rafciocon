@@ -1,8 +1,9 @@
 name: Steam Automation
 
 on:
-  push:
-    branches: [ main ]
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -11,23 +12,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check and Load Steam Storage State
-        env:
-          STEAM_STORAGE_STATE_B64: ${{ secrets.STEAM_STORAGE_STATE_B64 }}
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
         run: |
-          if [ -z "$STEAM_STORAGE_STATE_B64" ]; then
-            echo "Brak sekretu STEAM_STORAGE_STATE_B64. Upewnij się, że został dodany w ustawieniach repozytorium (Settings -> Secrets and variables -> Actions)."
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Restore Steam session
+        env:
+          STEAM_STORAGE_STATE_JSON: ${{ secrets.STEAM_STORAGE_STATE_JSON }}
+        run: |
+          if [ -z "$STEAM_STORAGE_STATE_JSON" ]; then
+            echo "::error::Missing STEAM_STORAGE_STATE_JSON repository secret"
             exit 1
           fi
-          
-          echo "Sekret znaleziony. Dekodowanie stanu sesji..."
-          # Przykład dekodowania zmiennej base64 do pliku konfiguracyjnego/sesji
-          echo "$STEAM_STORAGE_STATE_B64" | base64 --decode > steam_state.json
-          echo "Stan Steam został pomyślnie zapisany do pliku."
+          printf '%s' "$STEAM_STORAGE_STATE_JSON" > steam-storage-state.json
+          python -m json.tool steam-storage-state.json > /dev/null
 
-      - name: Run main script
+      - name: Run Steam monitor
         env:
-          STEAM_STORAGE_STATE_B64: ${{ secrets.STEAM_STORAGE_STATE_B64 }}
-        run: |
-          # Tutaj uruchamiasz swój główny skrypt (np. python lub node)
-          python main.py
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py

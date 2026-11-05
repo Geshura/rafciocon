@@ -97,7 +97,7 @@ uruchomieniem dodaj w repozytorium, w **Settings → Secrets and variables →
 Actions**, sekrety:
 
 - `DISCORD_WEBHOOK_URL`
-- `STEAM_STORAGE_STATE_B64`
+- `STEAM_STORAGE_STATE_JSON`
 
 Następnie wypchnij kod:
 
@@ -123,5 +123,6 @@ $state | Set-Clipboard
 ```
 
 W GitHub dodaj skopiowaną zawartość jako sekret
-`STEAM_STORAGE_STATE_B64`. Nie wysyłaj do repozytorium katalogu
+`STEAM_STORAGE_STATE_JSON`. Wklej do sekretu całą zawartość pliku JSON,
+łącznie z klamrami `{}`. Nie wysyłaj do repozytorium katalogu
 `.steam-playwright-profile`, pliku `steam-storage-state.json` ani webhooka.
