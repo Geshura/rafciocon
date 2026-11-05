@@ -124,8 +124,16 @@ def get_latest_steam_activity() -> dict[str, str]:
             browser.close()
 
     total_match = re.search(r"([\d.,]+)\s*godz\.\s*łącznie", game_details)
+    last_played_match = re.search(
+        r"Ostatnia gra:\s*([^\r\n]+)", game_details
+    )
     recent_match = re.search(r"([\d.,]+)\s*godz\.", recent_summary)
     total = total_match.group(1) if total_match else "?"
+    last_played = (
+        last_played_match.group(1).strip()
+        if last_played_match
+        else "?"
+    )
     recent = recent_match.group(1) if recent_match else "?"
 
     return {
@@ -133,6 +141,7 @@ def get_latest_steam_activity() -> dict[str, str]:
         "game_name": game_name,
         "game_image": game_image,
         "total": total,
+        "last_played": last_played,
         "recent": recent,
     }
 
@@ -158,6 +167,14 @@ def send_to_discord(activity: dict[str, str]) -> None:
                 "value": f"**{activity['total']} godz.**",
             },
         ]
+        if activity.get("last_played", "?") != "?":
+            fields.append(
+                {
+                    "name": "🗓️ Ostatnio uruchomiona",
+                    "value": f"**{activity['last_played']}**",
+                    "inline": True,
+                }
+            )
         if recent != "?":
             fields.append(
                 {
