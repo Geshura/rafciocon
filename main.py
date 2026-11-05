@@ -159,28 +159,29 @@ def send_to_discord(activity: dict[str, str]) -> None:
         recent = activity.get("recent", "?")
         fields = [
             {
-                "name": "🎮 Ostatnia gra",
+                "name": "🎮 Ostatnia gra:",
                 "value": f"**{activity['game_name']}**",
             },
             {
-                "name": "⏱️ Czas gry (ogólnie)",
+                "name": "⏱️ Czas gry łącznie:",
                 "value": f"**{activity['total']} godz.**",
+                "inline": True,
             },
         ]
-        if activity.get("last_played", "?") != "?":
-            fields.append(
-                {
-                    "name": "🗓️ Ostatnio uruchomiona",
-                    "value": f"**{activity['last_played']}**",
-                    "inline": True,
-                }
-            )
         if recent != "?":
             fields.append(
                 {
-                    "name": "📅 Czas gry (ostatnie 2 tygodnie)",
+                    "name": "📅 Ostatnie 2 tyg:",
                     "value": f"**{recent} godz.**",
                     "inline": True,
+                }
+            )
+        if activity.get("last_played", "?") != "?":
+            fields.append(
+                {
+                    "name": "🗓️ Ostatnio uruchomiona:",
+                    "value": f"**{activity['last_played']}**",
+                    "inline": False,
                 }
             )
     embed = {
