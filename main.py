@@ -157,33 +157,22 @@ def send_to_discord(activity: dict[str, str]) -> None:
         }
     else:
         recent = activity.get("recent", "?")
+        last_played = activity.get("last_played", "?")
         fields = [
             {
-                "name": "🎮 Ostatnia gra:",
+                "name": "🕹️ OSTATNIA GRA:",
                 "value": f"**{activity['game_name']}**",
             },
-            {
-                "name": "⏱️ Czas gry łącznie:",
-                "value": f"**{activity['total']} godz.**",
-                "inline": True,
-            },
         ]
-        if recent != "?":
-            fields.append(
-                {
-                    "name": "📅 Ostatnie 2 tyg:",
-                    "value": f"**{recent} godz.**",
-                    "inline": True,
-                }
-            )
-        if activity.get("last_played", "?") != "?":
-            fields.append(
-                {
-                    "name": "🗓️ Ostatnio uruchomiona:",
-                    "value": f"**{activity['last_played']}**",
-                    "inline": False,
-                }
-            )
+        fields.append(
+            {
+                "name": "⚠️ INFO:",
+                "value": (
+                    f"**Ostatnio uruchomiona:**\n"
+                    f"{last_played} ({recent} godz./{activity['total']} godz.)"
+                ),
+            }
+        )
     embed = {
         "title": "RAFCION",
         "description": f"**{activity['profile_name']}** uruchomił ostatnio:",
